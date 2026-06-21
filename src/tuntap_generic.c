@@ -21,8 +21,10 @@ mlvpn_tuntap_generic_read(u_char *data, uint32_t len)
             return len;
         sbuf = rtun->sbuf;
     }
-    if (mlvpn_cb_is_full(sbuf))
-        log_warnx("tuntap", "%s buffer: overflow", rtun->name);
+    if (mlvpn_cb_is_full(sbuf)) {
+        log_warnx("tuntap", "%s buffer: overflow, dropping packet", rtun->name);
+        return len;
+    }
 
     /* Ask for a free buffer */
     pkt = mlvpn_pktbuffer_write(sbuf);

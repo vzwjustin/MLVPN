@@ -73,7 +73,7 @@ void mlvpn_control_write_status(struct mlvpn_control *ctrl);
     "   \"last_packet\": %u,\n" \
     "   \"timeout\": %u\n" \
     "}%s\n"
-#define JSON_STATUS_ERROR_UNKNOWN_COMMAND "{\"error\": 'unknown command'}\n"
+#define JSON_STATUS_ERROR_UNKNOWN_COMMAND "{\"error\": \"unknown command\"}\n"
 
 static void
 mlvpn_control_client_io_event(struct ev_loop *loop, ev_io *w, int revents)
@@ -134,13 +134,14 @@ mlvpn_control_init(struct mlvpn_control *ctrl)
     ctrl->clientfd = -1;
     ctrl->wbuflen = 4096;
     ctrl->wbuf = malloc(ctrl->wbuflen);
+    if (ctrl->wbuf == NULL)
+        fatal("control", "malloc failed");
     ctrl->http = 0;
     ctrl->close_after_write = 0;
 
     ev_init(&ctrl->fifo_watcher, mlvpn_control_io_event);
     ev_init(&ctrl->sock_watcher, mlvpn_control_io_event);
     ev_init(&ctrl->client_io_read, mlvpn_control_client_io_event);
-    ev_init(&ctrl->client_io_write, mlvpn_control_client_io_event);
     ev_init(&ctrl->client_io_write, mlvpn_control_client_io_event);
     ev_init(&ctrl->timeout_watcher, mlvpn_control_timeout_event);
     ctrl->timeout_watcher.repeat = 1.;
@@ -401,7 +402,7 @@ void mlvpn_control_write_metrics(struct mlvpn_control *ctrl)
 
     control_writef("uptime %u\n", (uint32_t) mlvpn_status.start_time);
     control_writef("last_reload %u\n", (uint32_t) mlvpn_status.last_reload);
-    control_writef("pid %d\n", 0);
+    control_writef("pid %d\n", (int)getpid());
 
     LIST_FOREACH(t, &rtuns, entries)
     {
@@ -433,10 +434,10 @@ void mlvpn_control_write_status(struct mlvpn_control *ctrl)
 
     ret = snprintf(buf, 1024, JSON_STATUS_BASE,
         _progname,
-        1, 1, /* TODO */
+        MLVPN_VERSION_MAJOR, MLVPN_VERSION_MINOR,
         (uint32_t) mlvpn_status.start_time,
         (uint32_t) mlvpn_status.last_reload,
-        0,
+        (int)getpid(),
         tuntap.type == MLVPN_TUNTAPMODE_TUN ? "tun" : "tap",
         tuntap.devname
     );
@@ -475,7 +476,7 @@ void mlvpn_control_write_status(struct mlvpn_control *ctrl)
                        t->recvpackets,
                        t->sentbytes,
                        t->recvbytes,
-                       0,
+                       t->bandwidth,
                        (uint32_t)t->srtt,
                        mlvpn_loss_ratio(t),
                        t->disconnects,

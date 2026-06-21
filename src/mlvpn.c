@@ -326,6 +326,7 @@ mlvpn_rtun_recv_data(mlvpn_tunnel_t *tun, mlvpn_pkt_t *inpkt)
              * after the forced drain (packet loss)
              * Just inject the packet as is
              */
+            mlvpn_freebuffer_free(freebuf, pkt);
             mlvpn_rtun_inject_tuntap(inpkt);
             return 1;
         } else {
@@ -374,8 +375,17 @@ mlvpn_rtun_read(EV_P_ ev_io *w, int revents)
         if (! tun->addrinfo)
             fatalx("tun->addrinfo is NULL!");
 
-        if ((tun->addrinfo->ai_addrlen != addrlen) ||
-                (memcmp(tun->addrinfo->ai_addr, &clientaddr, addrlen) != 0)) {
+        if (tun->addrinfo->ai_addrlen != addrlen) {
+            if (tun->status < MLVPN_AUTHOK) {
+                log_warnx("protocol", "%s rejected non authenticated connection",
+                    tun->name);
+                return;
+            }
+            log_warnx("protocol", "%s rejected peer with mismatched address size",
+                tun->name);
+            return;
+        }
+        if (memcmp(tun->addrinfo->ai_addr, &clientaddr, addrlen) != 0) {
             if (tun->status < MLVPN_AUTHOK) {
                 log_warnx("protocol", "%s rejected non authenticated connection",
                     tun->name);
@@ -909,7 +919,7 @@ mlvpn_rtun_start(mlvpn_tunnel_t *t)
     t->io_timeout.repeat = MLVPN_IO_TIMEOUT_DEFAULT;
     return 0;
 error:
-    if (t->fd > 0) {
+    if (t->fd >= 0) {
         close(t->fd);
         t->fd = -1;
     }
@@ -1010,6 +1020,19 @@ mlvpn_rtun_status_up(mlvpn_tunnel_t *t)
     update_process_title();
 }
 
+static void
+mlvpn_rtun_close_socket(mlvpn_tunnel_t *t)
+{
+    if (t->fd >= 0) {
+        if (ev_is_active(&t->io_read))
+            ev_io_stop(EV_A_ &t->io_read);
+        if (ev_is_active(&t->io_write))
+            ev_io_stop(EV_A_ &t->io_write);
+        close(t->fd);
+        t->fd = -1;
+    }
+}
+
 void
 mlvpn_rtun_status_down(mlvpn_tunnel_t *t)
 {
@@ -1017,6 +1040,8 @@ mlvpn_rtun_status_down(mlvpn_tunnel_t *t)
     char **env;
     int env_len;
     enum chap_status old_status = t->status;
+
+    mlvpn_rtun_close_socket(t);
     t->status = MLVPN_DISCONNECTED;
     t->disconnects++;
     mlvpn_pktbuffer_reset(t->sbuf);
@@ -1089,7 +1114,7 @@ mlvpn_rtun_send_auth(mlvpn_tunnel_t *t)
     if (t->server_mode)
     {
         /* server side */
-        if (t->status == MLVPN_DISCONNECTED || t->status >= MLVPN_AUTHOK)
+        if (t->status == MLVPN_DISCONNECTED || t->status == MLVPN_AUTHSENT)
         {
             if (mlvpn_cb_is_full(t->hpsbuf)) {
                 log_warnx("net", "%s high priority buffer: overflow", t->name);

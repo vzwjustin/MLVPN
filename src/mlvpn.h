@@ -82,6 +82,8 @@
  * version 1: mlvpn 2.2+ (add reorder field in mlvpn_proto_t)
  */
 #define MLVPN_PROTOCOL_VERSION 1
+#define MLVPN_VERSION_MAJOR 2
+#define MLVPN_VERSION_MINOR 3
 
 struct mlvpn_options_s
 {
