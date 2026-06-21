@@ -29,3 +29,4 @@ test/
 mlvpn-*.tar.gz
 tmp/
 /result
+configure~

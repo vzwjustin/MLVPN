@@ -272,8 +272,14 @@ mlvpn_loss_update(mlvpn_tunnel_t *tun, uint64_t seq)
         tun->seq_last = seq;
     } else if (seq > tun->seq_last) {
         /* new sequence number -- recent message arrive */
-        tun->seq_vect <<= seq - tun->seq_last;
-        tun->seq_vect |= 1;
+        unsigned shift = seq - tun->seq_last;
+
+        if (shift >= 64) {
+            tun->seq_vect = (uint64_t) -1;
+        } else {
+            tun->seq_vect <<= shift;
+            tun->seq_vect |= 1;
+        }
         tun->seq_last = seq;
     } else if (seq >= tun->seq_last - 63) {
         tun->seq_vect |= (1 << (tun->seq_last - seq));
@@ -724,8 +730,9 @@ mlvpn_rtun_drop(mlvpn_tunnel_t *t)
                 freeaddrinfo(tmp->addrinfo);
             mlvpn_pktbuffer_free(tmp->sbuf);
             mlvpn_pktbuffer_free(tmp->hpsbuf);
+            free(tmp);
             /* Safety */
-            tmp->name = NULL;
+            tmp = NULL;
             break;
         }
     }
@@ -788,7 +795,7 @@ mlvpn_rtun_bind(mlvpn_tunnel_t *t)
     n = priv_getaddrinfo(t->bindaddr, t->bindport, &res, &hints);
     if (n <= 0)
     {
-        log_warnx(NULL, "%s getaddrinfo error: %s", t->name, gai_strerror(n));
+        log_warnx(NULL, "%s getaddrinfo error", t->name);
         return -1;
     }
 
@@ -829,11 +836,16 @@ mlvpn_rtun_start(mlvpn_tunnel_t *t)
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_DGRAM;
 
+    if (t->addrinfo) {
+        freeaddrinfo(t->addrinfo);
+        t->addrinfo = NULL;
+    }
+
     ret = priv_getaddrinfo(addr, port, &t->addrinfo, &hints);
     if (ret <= 0 || !t->addrinfo)
     {
-        log_warnx("dns", "%s getaddrinfo(%s,%s) failed: %s",
-           t->name, addr, port, gai_strerror(ret));
+        log_warnx("dns", "%s getaddrinfo(%s,%s) failed",
+           t->name, addr, port);
         return -1;
     }
 
@@ -851,6 +863,10 @@ mlvpn_rtun_start(mlvpn_tunnel_t *t)
             /* Setting fib/routing-table is supported on FreeBSD and OpenBSD only */
 #if defined(HAVE_FREEBSD)
             if (fib > 0 && setsockopt(fd, SOL_SOCKET, SO_SETFIB, &fib, sizeof(fib)) < 0)
+            {
+                log_warn(NULL, "Cannot set FIB %d for kernel socket", fib);
+                goto error;
+            }
 #elif defined(HAVE_OPENBSD)
             if (fib > 0 && setsockopt(fd, SOL_SOCKET, SO_RTABLE, &fib, sizeof(fib)) < 0)
             {

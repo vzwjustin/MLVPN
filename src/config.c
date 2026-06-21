@@ -66,7 +66,7 @@ mlvpn_config(int config_file_fd, int first_time)
 #ifdef HAVE_FILTERS
     struct bpf_program filter;
     pcap_t *pcap_dead_p = pcap_open_dead(DLT_RAW, DEFAULT_MTU);
-    memset(&mlvpn_filters, 0, sizeof(mlvpn_filters));
+    mlvpn_filters_clear();
 #endif
 
     work = config = _conf_parseConfig(config_file_fd);
@@ -212,8 +212,8 @@ mlvpn_config(int config_file_fd, int first_time)
                     strlcpy(mlvpn_options.ip4, tmp, sizeof(mlvpn_options.ip4));
                     free(tmp);
                 } else {
-                    memset(mlvpn_options.ip4_gateway, 0,
-                        sizeof(mlvpn_options.ip4_gateway));
+                    memset(mlvpn_options.ip4, 0,
+                        sizeof(mlvpn_options.ip4));
                 }
 
                 _conf_set_str_from_conf(
@@ -222,8 +222,8 @@ mlvpn_config(int config_file_fd, int first_time)
                     strlcpy(mlvpn_options.ip6, tmp, sizeof(mlvpn_options.ip6));
                     free(tmp);
                 } else {
-                    memset(mlvpn_options.ip4_gateway, 0,
-                        sizeof(mlvpn_options.ip4_gateway));
+                    memset(mlvpn_options.ip6, 0,
+                        sizeof(mlvpn_options.ip6));
                 }
 
                 _conf_set_str_from_conf(
@@ -358,11 +358,11 @@ mlvpn_config(int config_file_fd, int first_time)
                         log_info("config",
                             "%s restart for configuration reload",
                               tmptun->name);
-                        if ((! mystr_eq(tmptun->bindaddr, bindaddr)) ||
-                                (! mystr_eq(tmptun->bindport, bindport)) ||
+                        if ((bindaddr && !mystr_eq(tmptun->bindaddr, bindaddr)) ||
+                                (bindport && !mystr_eq(tmptun->bindport, bindport)) ||
                                 (tmptun->bindfib != bindfib) ||
-                                (! mystr_eq(tmptun->destaddr, dstaddr)) ||
-                                (! mystr_eq(tmptun->destport, dstport))) {
+                                (dstaddr && !mystr_eq(tmptun->destaddr, dstaddr)) ||
+                                (dstport && !mystr_eq(tmptun->destport, dstport))) {
                             mlvpn_rtun_status_down(tmptun);
                         }
 
@@ -489,6 +489,7 @@ mlvpn_config(int config_file_fd, int first_time)
                 if (!found_in_config) {
                     log_warnx("config", "(filters) %s interface not found",
                         work->conf->var);
+                    pcap_freecode(&filter);
                 }
             }
         }

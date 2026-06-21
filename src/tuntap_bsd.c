@@ -43,7 +43,9 @@ mlvpn_tuntap_read(struct tuntap_s *tuntap)
             (uint32_t)ret, tuntap->maxmtu);
         ret = tuntap->maxmtu;
     }
-    return mlvpn_tuntap_generic_read(data, ret);
+    if (ret < (ssize_t)sizeof(type))
+        return 0;
+    return mlvpn_tuntap_generic_read(data, ret - sizeof(type));
 }
 
 int

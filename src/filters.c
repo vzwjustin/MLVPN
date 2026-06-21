@@ -35,3 +35,13 @@ mlvpn_filters_add(const struct bpf_program *filter, mlvpn_tunnel_t *tun) {
     mlvpn_filters.count++;
     return 0;
 }
+
+void
+mlvpn_filters_clear(void)
+{
+    int i;
+
+    for (i = 0; i < mlvpn_filters.count; i++)
+        pcap_freecode(&mlvpn_filters.filter[i]);
+    memset(&mlvpn_filters, 0, sizeof(mlvpn_filters));
+}

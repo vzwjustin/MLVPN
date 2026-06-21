@@ -207,6 +207,7 @@ void mlvpn_rtun_drop(mlvpn_tunnel_t *t);
 void mlvpn_rtun_status_down(mlvpn_tunnel_t *t);
 #ifdef HAVE_FILTERS
 int mlvpn_filters_add(const struct bpf_program *filter, mlvpn_tunnel_t *tun);
+void mlvpn_filters_clear(void);
 mlvpn_tunnel_t *mlvpn_filters_choose(uint32_t pktlen, const u_char *pktdata);
 #endif
 
