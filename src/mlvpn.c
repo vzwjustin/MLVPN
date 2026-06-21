@@ -865,12 +865,14 @@ mlvpn_rtun_start(mlvpn_tunnel_t *t)
             if (fib > 0 && setsockopt(fd, SOL_SOCKET, SO_SETFIB, &fib, sizeof(fib)) < 0)
             {
                 log_warn(NULL, "Cannot set FIB %d for kernel socket", fib);
+                close(fd);
                 goto error;
             }
 #elif defined(HAVE_OPENBSD)
             if (fib > 0 && setsockopt(fd, SOL_SOCKET, SO_RTABLE, &fib, sizeof(fib)) < 0)
             {
                 log_warn(NULL, "Cannot set FIB %d for kernel socket", fib);
+                close(fd);
                 goto error;
             }
 #endif

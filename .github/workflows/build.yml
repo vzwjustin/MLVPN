@@ -32,4 +32,4 @@ jobs:
           make -j"$(nproc)"
 
       - name: Verify binary
-        run: ./src/mlvpn --help
+        run: ./src/mlvpn --version

@@ -108,6 +108,11 @@ mlvpn_reorder_create(unsigned int size)
 {
     struct mlvpn_reorder_buffer *b = NULL;
     unsigned int normalized_size = mlvpn_reorder_normalize_size(size);
+
+    if (normalized_size == 0) {
+        log_crit("reorder", "Invalid reorder buffer size: %u", size);
+        return NULL;
+    }
     const unsigned int bufsize = sizeof(struct mlvpn_reorder_buffer) +
                     (2 * normalized_size * sizeof(mlvpn_pkt_t *));
     /* Allocate memory to store the reorder buffer structure. */

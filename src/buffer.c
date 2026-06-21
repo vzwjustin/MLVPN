@@ -123,9 +123,11 @@ mlvpn_pktbuffer_free(circular_buffer_t *buf)
     pktbuffer_t *pktbuffer = buf->data;
 
     if (pktbuffer) {
-        for (i = 0; i < buf->size; i++)
-            free(pktbuffer->pkts[i]);
-        free(pktbuffer->pkts);
+        if (pktbuffer->pkts) {
+            for (i = 0; i < buf->size; i++)
+                free(pktbuffer->pkts[i]);
+            free(pktbuffer->pkts);
+        }
         free(pktbuffer);
     }
     mlvpn_cb_free(buf);

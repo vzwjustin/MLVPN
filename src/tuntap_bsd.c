@@ -37,11 +37,11 @@ mlvpn_tuntap_read(struct tuntap_s *tuntap)
         }
     } else if (ret == 0) { /* End of file */
         fatalx("tuntap device closed");
-    } else if (ret > tuntap->maxmtu)  {
+    } else if (ret > (ssize_t)(tuntap->maxmtu + sizeof(type)))  {
         log_warnx("tuntap",
             "cannot send packet: too big %d/%d. truncating",
             (uint32_t)ret, tuntap->maxmtu);
-        ret = tuntap->maxmtu;
+        ret = tuntap->maxmtu + sizeof(type);
     }
     if (ret < (ssize_t)sizeof(type))
         return 0;
