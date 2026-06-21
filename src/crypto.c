@@ -29,7 +29,7 @@
 static unsigned char key[crypto_secretbox_KEYBYTES];
 
 
-int crypto_init()
+int crypto_init(void)
 {
     return sodium_init();
 }

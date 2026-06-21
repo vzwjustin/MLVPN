@@ -1,7 +1,6 @@
 # MLVPN - Multi-Link Virtual Public Network
 
-[![Build Status](https://travis-ci.org/zehome/MLVPN.svg?branch=master)](https://travis-ci.org/zehome/MLVPN)
-[![Coverity Status](https://scan.coverity.com/projects/4405/badge.svg)](https://scan.coverity.com/projects/4405)
+[![Build Status](https://github.com/vzwjustin/mlvpn/actions/workflows/build.yml/badge.svg?branch=master)](https://github.com/vzwjustin/mlvpn/actions/workflows/build.yml)
 
 author: Laurent Coustet <ed arobase zehome.com>
 

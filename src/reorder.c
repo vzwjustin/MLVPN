@@ -37,7 +37,27 @@
 #include <sys/queue.h>
 
 #include "reorder.h"
+#include "buffer.h"
 #include "log.h"
+#include "mlvpn.h"
+
+extern freebuffer_t *freebuf;
+
+static unsigned int
+mlvpn_reorder_normalize_size(unsigned int size)
+{
+    unsigned int normalized = 1;
+
+    if (size == 0)
+        return 0;
+    if ((size & (size - 1)) == 0)
+        return size;
+    while (normalized < size)
+        normalized <<= 1;
+    log_warnx("reorder", "reorder buffer size %u rounded up to %u (power of two required)",
+        size, normalized);
+    return normalized;
+}
 
 /* A generic circular buffer */
 struct cir_buffer {
@@ -87,15 +107,20 @@ struct mlvpn_reorder_buffer*
 mlvpn_reorder_create(unsigned int size)
 {
     struct mlvpn_reorder_buffer *b = NULL;
+    unsigned int normalized_size = mlvpn_reorder_normalize_size(size);
 
+    if (normalized_size == 0) {
+        log_crit("reorder", "Invalid reorder buffer size: %u", size);
+        return NULL;
+    }
     const unsigned int bufsize = sizeof(struct mlvpn_reorder_buffer) +
-                    (2 * size * sizeof(mlvpn_pkt_t *));
+                    (2 * normalized_size * sizeof(mlvpn_pkt_t *));
     /* Allocate memory to store the reorder buffer structure. */
     b = calloc(1, bufsize);
     if (b == NULL) {
         log_crit("reorder", "Memzone allocation failed");
     } else {
-        mlvpn_reorder_init(b, bufsize, size);
+        mlvpn_reorder_init(b, bufsize, normalized_size);
     }
     return b;
 }
@@ -210,6 +235,8 @@ mlvpn_reorder_insert(struct mlvpn_reorder_buffer *b, mlvpn_pkt_t *pkt)
      */
     if (offset < b->order_buf.size) {
         position = (order_buf->head + offset) & order_buf->mask;
+        if (order_buf->pkts[position] != NULL)
+            mlvpn_freebuffer_free(freebuf, order_buf->pkts[position]);
         order_buf->pkts[position] = pkt;
     } else if (offset < 2 * b->order_buf.size) {
         if (mlvpn_reorder_fill_overflow(b, offset + 1 - order_buf->size)
@@ -219,6 +246,8 @@ mlvpn_reorder_insert(struct mlvpn_reorder_buffer *b, mlvpn_pkt_t *pkt)
         }
         offset = pkt->seq - b->min_seqn;
         position = (order_buf->head + offset) & order_buf->mask;
+        if (order_buf->pkts[position] != NULL)
+            mlvpn_freebuffer_free(freebuf, order_buf->pkts[position]);
         order_buf->pkts[position] = pkt;
     } else {
         /* Put in handling for enqueue straight to output */

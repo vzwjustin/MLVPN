@@ -119,8 +119,17 @@ mlvpn_pktbuffer_init(int size)
 void
 mlvpn_pktbuffer_free(circular_buffer_t *buf)
 {
+    int i;
     pktbuffer_t *pktbuffer = buf->data;
-    free(pktbuffer->pkts);
+
+    if (pktbuffer) {
+        if (pktbuffer->pkts) {
+            for (i = 0; i < buf->size; i++)
+                free(pktbuffer->pkts[i]);
+            free(pktbuffer->pkts);
+        }
+        free(pktbuffer);
+    }
     mlvpn_cb_free(buf);
 }
 
@@ -156,7 +165,7 @@ mlvpn_freebuffer_init(unsigned int size)
 {
     unsigned int i;
     struct pkt_entry *entry;
-    freebuffer_t *freebuf = calloc(size, sizeof(freebuffer_t));
+    freebuffer_t *freebuf = calloc(1, sizeof(freebuffer_t));
     if (freebuf == NULL) {
         fatal("buffer", "memory allocation failed");
     }

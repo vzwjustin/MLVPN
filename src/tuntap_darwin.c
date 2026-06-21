@@ -66,13 +66,13 @@ mlvpn_tuntap_write(struct tuntap_s *tuntap)
 int
 mlvpn_tuntap_alloc(struct tuntap_s *tuntap)
 {
-    char devname[8];
+    char devname[16];
     int fd;
     int i;
 
     for (i=0; i < 32; i++)
     {
-        snprintf(devname, 5, "%s%d",
+        snprintf(devname, sizeof(devname), "%s%d",
                  tuntap->type == MLVPN_TUNTAPMODE_TAP ? "tap" : "tun", i);
         snprintf(tuntap->devname, sizeof(tuntap->devname), "/dev/%s", devname);
 

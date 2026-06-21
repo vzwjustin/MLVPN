@@ -73,7 +73,7 @@ void mlvpn_control_write_status(struct mlvpn_control *ctrl);
     "   \"last_packet\": %u,\n" \
     "   \"timeout\": %u\n" \
     "}%s\n"
-#define JSON_STATUS_ERROR_UNKNOWN_COMMAND "{\"error\": 'unknown command'}\n"
+#define JSON_STATUS_ERROR_UNKNOWN_COMMAND "{\"error\": \"unknown command\"}\n"
 
 static void
 mlvpn_control_client_io_event(struct ev_loop *loop, ev_io *w, int revents)
@@ -134,13 +134,14 @@ mlvpn_control_init(struct mlvpn_control *ctrl)
     ctrl->clientfd = -1;
     ctrl->wbuflen = 4096;
     ctrl->wbuf = malloc(ctrl->wbuflen);
+    if (ctrl->wbuf == NULL)
+        fatal("control", "malloc failed");
     ctrl->http = 0;
     ctrl->close_after_write = 0;
 
     ev_init(&ctrl->fifo_watcher, mlvpn_control_io_event);
     ev_init(&ctrl->sock_watcher, mlvpn_control_io_event);
     ev_init(&ctrl->client_io_read, mlvpn_control_client_io_event);
-    ev_init(&ctrl->client_io_write, mlvpn_control_client_io_event);
     ev_init(&ctrl->client_io_write, mlvpn_control_client_io_event);
     ev_init(&ctrl->timeout_watcher, mlvpn_control_timeout_event);
     ctrl->timeout_watcher.repeat = 1.;
@@ -189,9 +190,8 @@ mlvpn_control_init(struct mlvpn_control *ctrl)
         bak = res;
         if (ret <= 0 || ! res)
         {
-            log_warnx("control", "priv_getaddrinfo(%s,%s) failed: %s",
-                   ctrl->bindaddr, ctrl->bindport,
-                   gai_strerror(ret));
+            log_warnx("control", "priv_getaddrinfo(%s,%s) failed",
+                   ctrl->bindaddr, ctrl->bindport);
         }
 
         while(res)
@@ -393,12 +393,16 @@ void mlvpn_control_write_metrics(struct mlvpn_control *ctrl)
 
 #define control_writef(fmt, ...) do { \
     ret = snprintf(buf, sizeof(buf), (fmt), ##__VA_ARGS__); \
+    if (ret < 0) \
+        ret = 0; \
+    else if ((size_t)ret >= sizeof(buf)) \
+        ret = sizeof(buf) - 1; \
     mlvpn_control_write(ctrl, buf, ret); \
 } while (0)
 
     control_writef("uptime %u\n", (uint32_t) mlvpn_status.start_time);
     control_writef("last_reload %u\n", (uint32_t) mlvpn_status.last_reload);
-    control_writef("pid %d\n", 0);
+    control_writef("pid %d\n", (int)getpid());
 
     LIST_FOREACH(t, &rtuns, entries)
     {
@@ -430,13 +434,17 @@ void mlvpn_control_write_status(struct mlvpn_control *ctrl)
 
     ret = snprintf(buf, 1024, JSON_STATUS_BASE,
         _progname,
-        1, 1, /* TODO */
+        MLVPN_VERSION_MAJOR, MLVPN_VERSION_MINOR,
         (uint32_t) mlvpn_status.start_time,
         (uint32_t) mlvpn_status.last_reload,
-        0,
+        (int)getpid(),
         tuntap.type == MLVPN_TUNTAPMODE_TUN ? "tun" : "tap",
         tuntap.devname
     );
+    if (ret < 0)
+        ret = 0;
+    else if ((size_t)ret >= sizeof(buf))
+        ret = sizeof(buf) - 1;
     mlvpn_control_write(ctrl, buf, ret);
     LIST_FOREACH(t, &rtuns, entries)
     {
@@ -459,16 +467,16 @@ void mlvpn_control_write_status(struct mlvpn_control *ctrl)
         ret = snprintf(buf, 1024, JSON_STATUS_RTUN,
                        t->name,
                        mode,
-                       t->bindaddr ? t->bindaddr : "any",
-                       t->bindport ? t->bindport : "any",
-                       t->destaddr ? t->destaddr : "",
-                       t->destport ? t->destport : "",
+                       *t->bindaddr ? t->bindaddr : "any",
+                       *t->bindport ? t->bindport : "any",
+                       *t->destaddr ? t->destaddr : "",
+                       *t->destport ? t->destport : "",
                        status,
                        t->sentpackets,
                        t->recvpackets,
                        t->sentbytes,
                        t->recvbytes,
-                       0,
+                       t->bandwidth,
                        (uint32_t)t->srtt,
                        mlvpn_loss_ratio(t),
                        t->disconnects,
@@ -476,6 +484,10 @@ void mlvpn_control_write_status(struct mlvpn_control *ctrl)
                        (uint32_t)t->timeout,
                        (LIST_NEXT(t, entries) ? "," : "")
                       );
+        if (ret < 0)
+            ret = 0;
+        else if ((size_t)ret >= sizeof(buf))
+            ret = sizeof(buf) - 1;
         mlvpn_control_write(ctrl, buf, ret);
     }
     mlvpn_control_write(ctrl, "]}\n", 3);
@@ -502,10 +514,9 @@ mlvpn_control_read_check(struct mlvpn_control *ctrl)
         {
             memcpy(line, ctrl->rbuf, i);
             line[i] = '\0';
-            /* Shift the actual buffer */
-            memmove(ctrl->rbuf, ctrl->rbuf+i,
-                    MLVPN_CTRL_BUFSIZ - i);
-            ctrl->rbufpos -= i+1;
+            /* Shift the actual buffer past the consumed line */
+            memmove(ctrl->rbuf, ctrl->rbuf + i + 1, ctrl->rbufpos - i - 1);
+            ctrl->rbufpos -= i + 1;
             mlvpn_control_parse(ctrl, line);
             return 1;
         }
@@ -542,7 +553,7 @@ mlvpn_control_read(struct mlvpn_control *ctrl)
         }
     } else {
         /* End of file */
-        ctrl->clientfd = -1;
+        mlvpn_control_close_client(ctrl);
     }
 
     return 0;
@@ -554,8 +565,17 @@ mlvpn_control_write(struct mlvpn_control *ctrl, void *buf, size_t len)
     if (ctrl->wbuflen - (ctrl->wbufpos+len) <= 0)
     {
         /* Hard realloc */
-        ctrl->wbuflen += 1024*32;
-        ctrl->wbuf = realloc(ctrl->wbuf, ctrl->wbuflen);
+        char *new_wbuf;
+        size_t new_wbuflen = ctrl->wbuflen + 1024*32;
+
+        new_wbuf = realloc(ctrl->wbuf, new_wbuflen);
+        if (new_wbuf == NULL) {
+            log_warnx("control", "send buffer allocation failed");
+            mlvpn_control_close_client(ctrl);
+            return -1;
+        }
+        ctrl->wbuf = new_wbuf;
+        ctrl->wbuflen = new_wbuflen;
     }
 
     if (ctrl->wbuflen - (ctrl->wbufpos+len) <= 0)

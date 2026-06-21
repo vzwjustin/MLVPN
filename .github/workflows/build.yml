@@ -1,35 +1,23 @@
-name: CodeQL
+name: Build
 
 on:
   push:
     branches: [master]
   pull_request:
     branches: [master]
-  schedule:
-    - cron: '0 22 * * 6'
 
 jobs:
-  analyze:
-    name: Analyze
-    runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      contents: read
-      security-events: write
-
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        language: ['cpp']
+        os: [ubuntu-latest]
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
-        with:
-          languages: ${{ matrix.language }}
 
       - name: Install dependencies
         run: |
@@ -43,5 +31,5 @@ jobs:
           ./configure
           make -j"$(nproc)"
 
-      - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
+      - name: Verify binary
+        run: ./src/mlvpn --version

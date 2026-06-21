@@ -272,8 +272,14 @@ mlvpn_loss_update(mlvpn_tunnel_t *tun, uint64_t seq)
         tun->seq_last = seq;
     } else if (seq > tun->seq_last) {
         /* new sequence number -- recent message arrive */
-        tun->seq_vect <<= seq - tun->seq_last;
-        tun->seq_vect |= 1;
+        unsigned shift = seq - tun->seq_last;
+
+        if (shift >= 64) {
+            tun->seq_vect = (uint64_t) -1;
+        } else {
+            tun->seq_vect <<= shift;
+            tun->seq_vect |= 1;
+        }
         tun->seq_last = seq;
     } else if (seq >= tun->seq_last - 63) {
         tun->seq_vect |= (1 << (tun->seq_last - seq));
@@ -320,6 +326,7 @@ mlvpn_rtun_recv_data(mlvpn_tunnel_t *tun, mlvpn_pkt_t *inpkt)
              * after the forced drain (packet loss)
              * Just inject the packet as is
              */
+            mlvpn_freebuffer_free(freebuf, pkt);
             mlvpn_rtun_inject_tuntap(inpkt);
             return 1;
         } else {
@@ -368,9 +375,18 @@ mlvpn_rtun_read(EV_P_ ev_io *w, int revents)
         if (! tun->addrinfo)
             fatalx("tun->addrinfo is NULL!");
 
-        if ((tun->addrinfo->ai_addrlen != addrlen) ||
-                (memcmp(tun->addrinfo->ai_addr, &clientaddr, addrlen) != 0)) {
-            if (! tun->status >= MLVPN_AUTHOK) {
+        if (tun->addrinfo->ai_addrlen != addrlen) {
+            if (tun->status < MLVPN_AUTHOK) {
+                log_warnx("protocol", "%s rejected non authenticated connection",
+                    tun->name);
+                return;
+            }
+            log_warnx("protocol", "%s rejected peer with mismatched address size",
+                tun->name);
+            return;
+        }
+        if (memcmp(tun->addrinfo->ai_addr, &clientaddr, addrlen) != 0) {
+            if (tun->status < MLVPN_AUTHOK) {
                 log_warnx("protocol", "%s rejected non authenticated connection",
                     tun->name);
                 return;
@@ -724,8 +740,9 @@ mlvpn_rtun_drop(mlvpn_tunnel_t *t)
                 freeaddrinfo(tmp->addrinfo);
             mlvpn_pktbuffer_free(tmp->sbuf);
             mlvpn_pktbuffer_free(tmp->hpsbuf);
+            free(tmp);
             /* Safety */
-            tmp->name = NULL;
+            tmp = NULL;
             break;
         }
     }
@@ -788,7 +805,7 @@ mlvpn_rtun_bind(mlvpn_tunnel_t *t)
     n = priv_getaddrinfo(t->bindaddr, t->bindport, &res, &hints);
     if (n <= 0)
     {
-        log_warnx(NULL, "%s getaddrinfo error: %s", t->name, gai_strerror(n));
+        log_warnx(NULL, "%s getaddrinfo error", t->name);
         return -1;
     }
 
@@ -829,11 +846,16 @@ mlvpn_rtun_start(mlvpn_tunnel_t *t)
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_DGRAM;
 
+    if (t->addrinfo) {
+        freeaddrinfo(t->addrinfo);
+        t->addrinfo = NULL;
+    }
+
     ret = priv_getaddrinfo(addr, port, &t->addrinfo, &hints);
     if (ret <= 0 || !t->addrinfo)
     {
-        log_warnx("dns", "%s getaddrinfo(%s,%s) failed: %s",
-           t->name, addr, port, gai_strerror(ret));
+        log_warnx("dns", "%s getaddrinfo(%s,%s) failed",
+           t->name, addr, port);
         return -1;
     }
 
@@ -851,10 +873,16 @@ mlvpn_rtun_start(mlvpn_tunnel_t *t)
             /* Setting fib/routing-table is supported on FreeBSD and OpenBSD only */
 #if defined(HAVE_FREEBSD)
             if (fib > 0 && setsockopt(fd, SOL_SOCKET, SO_SETFIB, &fib, sizeof(fib)) < 0)
+            {
+                log_warn(NULL, "Cannot set FIB %d for kernel socket", fib);
+                close(fd);
+                goto error;
+            }
 #elif defined(HAVE_OPENBSD)
             if (fib > 0 && setsockopt(fd, SOL_SOCKET, SO_RTABLE, &fib, sizeof(fib)) < 0)
             {
                 log_warn(NULL, "Cannot set FIB %d for kernel socket", fib);
+                close(fd);
                 goto error;
             }
 #endif
@@ -891,7 +919,7 @@ mlvpn_rtun_start(mlvpn_tunnel_t *t)
     t->io_timeout.repeat = MLVPN_IO_TIMEOUT_DEFAULT;
     return 0;
 error:
-    if (t->fd > 0) {
+    if (t->fd >= 0) {
         close(t->fd);
         t->fd = -1;
     }
@@ -992,6 +1020,19 @@ mlvpn_rtun_status_up(mlvpn_tunnel_t *t)
     update_process_title();
 }
 
+static void
+mlvpn_rtun_close_socket(mlvpn_tunnel_t *t)
+{
+    if (t->fd >= 0) {
+        if (ev_is_active(&t->io_read))
+            ev_io_stop(EV_A_ &t->io_read);
+        if (ev_is_active(&t->io_write))
+            ev_io_stop(EV_A_ &t->io_write);
+        close(t->fd);
+        t->fd = -1;
+    }
+}
+
 void
 mlvpn_rtun_status_down(mlvpn_tunnel_t *t)
 {
@@ -999,6 +1040,8 @@ mlvpn_rtun_status_down(mlvpn_tunnel_t *t)
     char **env;
     int env_len;
     enum chap_status old_status = t->status;
+
+    mlvpn_rtun_close_socket(t);
     t->status = MLVPN_DISCONNECTED;
     t->disconnects++;
     mlvpn_pktbuffer_reset(t->sbuf);
@@ -1071,7 +1114,7 @@ mlvpn_rtun_send_auth(mlvpn_tunnel_t *t)
     if (t->server_mode)
     {
         /* server side */
-        if (t->status == MLVPN_DISCONNECTED || t->status >= MLVPN_AUTHOK)
+        if (t->status == MLVPN_DISCONNECTED || t->status == MLVPN_AUTHSENT)
         {
             if (mlvpn_cb_is_full(t->hpsbuf)) {
                 log_warnx("net", "%s high priority buffer: overflow", t->name);
