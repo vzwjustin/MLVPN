@@ -139,6 +139,20 @@ mlvpn_config(int config_file_fd, int first_time)
                 if (mode)
                     free(mode);
 
+#ifdef HAVE_QUIC
+                _conf_set_str_from_conf(
+                    config, lastSection, "transport", &tmp, "udp", NULL, 0);
+                if (tmp) {
+                    if (mystr_eq(tmp, "quic")) {
+                        mlvpn_options.use_quic = 1;
+                        log_info("config", "QUIC transport enabled");
+                    } else {
+                        mlvpn_options.use_quic = 0;
+                    }
+                    free(tmp);
+                }
+#endif
+
                 _conf_set_str_from_conf(
                     config, lastSection, "password", &password, NULL,
                     "Password is mandatory.", 2);

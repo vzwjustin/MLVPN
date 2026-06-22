@@ -8,6 +8,10 @@ statuscommand = "@sysconfdir@/mlvpn/mlvpn_updown.sh"
 # "client" will just connect to "remotehost/remoteport"
 mode = "client"
 
+# Transport: "udp" (default) or "quic" (requires build with --enable-quic)
+# With QUIC, the password also derives the TLS certificate fingerprint.
+#transport = "udp"
+
 # Interface configuration
 # IPv4 address of the tunnel on the local side (don't forget the cidr mask)
 #ip4 = "10.42.43.1/30"

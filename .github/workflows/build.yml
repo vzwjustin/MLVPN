@@ -8,12 +8,13 @@ on:
 
 jobs:
   build:
-    name: Build on ${{ matrix.os }}
+    name: Build on ${{ matrix.os }} (${{ matrix.quic && 'QUIC' || 'UDP' }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
+        quic: [false, true]
 
     steps:
       - name: Checkout repository
@@ -24,12 +25,27 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential autoconf automake libtool \
             pkg-config libev-dev libsodium-dev libpcap-dev
+          if [ "${{ matrix.quic }}" = "true" ]; then
+            sudo apt-get install -y libngtcp2-dev libngtcp2-crypto-gnutls-dev \
+              libgnutls28-dev
+          fi
 
       - name: Build
         run: |
           ./autogen.sh
-          ./configure
+          if [ "${{ matrix.quic }}" = "true" ]; then
+            ./configure --enable-quic
+          else
+            ./configure
+          fi
           make -j"$(nproc)"
 
       - name: Verify binary
         run: ./src/mlvpn --version
+
+      - name: QUIC smoke test
+        if: matrix.quic == true
+        continue-on-error: true
+        run: |
+          chmod +x scripts/ci/quic-smoke.sh
+          scripts/ci/quic-smoke.sh

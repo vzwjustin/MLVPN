@@ -143,6 +143,7 @@ PKG_CHECK_MODULES([libev], [libev], [], [
 ### Command lines options ###
 mlvpn_ARG_ENABLE([control], [remote control system (cli and http)], [yes])
 mlvpn_ARG_ENABLE([filters], [libpcap support for filters], [yes])
+mlvpn_ARG_ENABLE([quic], [QUIC transport via ngtcp2], [no])
 mlvpn_ARG_WITH([install-examples], [install example files], [yes])
 AM_CONDITIONAL([INSTALL_EXAMPLES], [test x"$with_install_examples" = x"yes" ])
 
@@ -179,6 +180,22 @@ AS_IF([test x"$enable_filters" = x"yes"], [
             AC_MSG_ERROR("libpcap not found")
         ])
     ])
+])
+
+dnl checks for ngtcp2 / QUIC transport
+AM_CONDITIONAL([HAVE_QUIC], [false])
+AS_IF([test x"$enable_quic" = x"yes"], [
+    PKG_CHECK_MODULES([libngtcp2], [libngtcp2 >= 0.1.0], [], [
+        AC_MSG_ERROR([libngtcp2 not found (required for --enable-quic)])
+    ])
+    PKG_CHECK_MODULES([libngtcp2_crypto_gnutls], [libngtcp2_crypto_gnutls], [], [
+        AC_MSG_ERROR([libngtcp2_crypto_gnutls not found (required for --enable-quic)])
+    ])
+    PKG_CHECK_MODULES([gnutls], [gnutls >= 3.5.0], [], [
+        AC_MSG_ERROR([gnutls not found (required for --enable-quic)])
+    ])
+    AM_CONDITIONAL([HAVE_QUIC], [true])
+    AC_DEFINE([HAVE_QUIC], [1], [QUIC transport via ngtcp2])
 ])
 
 AC_CHECK_PROGS([RONN], [ronn], [])
