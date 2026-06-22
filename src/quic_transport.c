@@ -636,24 +636,24 @@ static int
 quic_server_accept(struct mlvpn_quic_ctx *ctx, const uint8_t *pkt, size_t pktlen,
                    const ngtcp2_path *path)
 {
-    ngtcp2_version_cid vc;
-    ngtcp2_cid odcid;
+    ngtcp2_pkt_hd hd;
     int rv;
 
-    rv = ngtcp2_pkt_decode_version_cid(&vc, pkt, pktlen, NGTCP2_MAX_CIDLEN);
-    if (rv != 0 && rv != NGTCP2_ERR_VERSION_NEGOTIATION) {
-        log_debug("quic", "%s ignoring undecodable QUIC datagram: %s",
+    rv = ngtcp2_accept(&hd, pkt, pktlen);
+    if (rv == NGTCP2_ERR_RETRY) {
+        log_debug("quic", "%s QUIC Retry required", ctx->tun->name);
+        return -1;
+    }
+    if (rv != 0) {
+        log_debug("quic", "%s ignoring unacceptable QUIC datagram: %s",
                   ctx->tun->name, ngtcp2_strerror(rv));
         return -1;
     }
-    if (vc.scid == NULL || vc.scidlen == 0) {
-        log_debug("quic", "%s ignoring QUIC datagram without client SCID",
-                  ctx->tun->name);
+    if (hd.type != NGTCP2_PKT_INITIAL) {
         return -1;
     }
 
-    quic_cid_from_raw(&odcid, vc.scid, vc.scidlen);
-    if (quic_server_conn_init(ctx, path, vc.version, &odcid) != 0) {
+    if (quic_server_conn_init(ctx, path, hd.version, &hd.scid) != 0) {
         return -1;
     }
 

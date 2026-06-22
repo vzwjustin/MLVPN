@@ -448,6 +448,8 @@ mlvpn_rtun_read(EV_P_ ev_io *w, int revents)
             return;
         }
 
+        log_debug("quic", "%s received %zd UDP bytes", tun->name, len);
+
         if (mlvpn_quic_input(tun->quic, buf, (size_t)len,
                              (struct sockaddr *)&clientaddr, msg.msg_namelen) < 0) {
             mlvpn_rtun_status_down(tun);
