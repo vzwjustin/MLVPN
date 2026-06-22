@@ -69,7 +69,9 @@ chmod 0600 "$WORKDIR/server.conf" "$WORKDIR/client.conf"
 
 FAIL_PAT='\[CRIT|fatal|unable to chroot|TLS init failed|incorrect password|quic_create|unable to open /dev/net/tun|failed to open|sendmsg failed|ngtcp2_conn_'
 SERVER_READY_PAT='\[INFO/quic\].*QUIC transport enabled'
-QUIC_FIXTURES="$(cd "$(dirname "$0")/quic-fixtures" && pwd)"
+QUIC_FIXTURES="$WORKDIR/certs"
+mkdir -p "$QUIC_FIXTURES"
+cp "$(dirname "$0")/quic-fixtures/server.crt" "$(dirname "$0")/quic-fixtures/server.key" "$QUIC_FIXTURES/"
 chmod a+r "$QUIC_FIXTURES/server.crt" "$QUIC_FIXTURES/server.key"
 
 sudo stdbuf -oL -eL env MLVPN_SKIP_CHROOT=1 MLVPN_QUIC_INSECURE=1 MLVPN_QUIC_FIXTURES="$QUIC_FIXTURES" "$MLVPN" --yes-run-as-root --debug -v -c "$WORKDIR/server.conf" \
