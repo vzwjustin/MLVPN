@@ -279,6 +279,7 @@ quic_generate_password_cert(gnutls_x509_crt_t *cert,
             break;
         }
         if (attempt == 7) {
+            log_warnx("quic", "password-derived TLS key import failed");
             gnutls_x509_privkey_deinit(*key);
             gnutls_x509_crt_deinit(*cert);
             return -1;

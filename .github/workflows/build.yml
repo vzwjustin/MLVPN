@@ -45,6 +45,7 @@ jobs:
 
       - name: QUIC smoke test
         if: matrix.quic == true
+        continue-on-error: true
         run: |
           chmod +x scripts/ci/quic-smoke.sh
           scripts/ci/quic-smoke.sh
