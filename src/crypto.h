@@ -9,6 +9,7 @@
 int crypto_init(void);
 int crypto_set_password(const char *password,
                         unsigned long long password_len);
+int crypto_get_key(unsigned char *out, size_t outlen);
 int crypto_encrypt(unsigned char *c, const unsigned char *m,
                    unsigned long long mlen,
                    const unsigned char *nonce);

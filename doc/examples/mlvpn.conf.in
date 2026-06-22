@@ -9,6 +9,7 @@ statuscommand = "@sysconfdir@/mlvpn/mlvpn_updown.sh"
 mode = "client"
 
 # Transport: "udp" (default) or "quic" (requires build with --enable-quic)
+# With QUIC, the password also derives the TLS certificate fingerprint.
 #transport = "udp"
 
 # Interface configuration

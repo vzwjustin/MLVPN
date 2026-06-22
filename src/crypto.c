@@ -41,6 +41,15 @@ int crypto_set_password(const char *password,
                key, sizeof(key), (unsigned char *)password, password_len, NULL, 0);
 }
 
+int crypto_get_key(unsigned char *out, size_t outlen)
+{
+    if (out == NULL || outlen < sizeof(key)) {
+        return -1;
+    }
+    memcpy(out, key, sizeof(key));
+    return 0;
+}
+
 int crypto_encrypt(unsigned char *c, const unsigned char *m,
                    unsigned long long mlen,
                    const unsigned char *nonce)

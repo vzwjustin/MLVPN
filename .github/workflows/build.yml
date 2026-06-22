@@ -42,3 +42,9 @@ jobs:
 
       - name: Verify binary
         run: ./src/mlvpn --version
+
+      - name: QUIC smoke test
+        if: matrix.quic == true
+        run: |
+          chmod +x scripts/ci/quic-smoke.sh
+          scripts/ci/quic-smoke.sh

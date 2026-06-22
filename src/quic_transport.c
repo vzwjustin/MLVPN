@@ -5,6 +5,7 @@
 #include "quic_transport.h"
 #include "mlvpn.h"
 #include "log.h"
+#include "crypto.h"
 
 #include <errno.h>
 #include <time.h>
@@ -245,10 +246,99 @@ quic_get_conn(ngtcp2_crypto_conn_ref *conn_ref)
 }
 
 static int
+quic_tls_seed(unsigned char seed[32])
+{
+    static const unsigned char label[] = "mlvpn-quic-tls-v1";
+    unsigned char key[crypto_secretbox_KEYBYTES];
+
+    if (crypto_get_key(key, sizeof(key)) != 0) {
+        return -1;
+    }
+    return crypto_generichash(seed, 32, key, sizeof(key), label, sizeof(label) - 1);
+}
+
+static int
+quic_generate_password_cert(gnutls_x509_crt_t *cert,
+                            gnutls_x509_privkey_t *key)
+{
+    unsigned char seed[32];
+    gnutls_datum_t k;
+
+    if (quic_tls_seed(seed) != 0) {
+        return -1;
+    }
+
+    gnutls_x509_privkey_init(key);
+    gnutls_x509_crt_init(cert);
+
+    k.data = seed;
+    k.size = sizeof(seed);
+    if (gnutls_x509_privkey_import_ecc_raw(*key, GNUTLS_ECC_CURVE_SECP256R1,
+                                           NULL, NULL, &k) != 0) {
+        gnutls_x509_privkey_deinit(*key);
+        gnutls_x509_crt_deinit(*cert);
+        return -1;
+    }
+
+    if (gnutls_x509_crt_set_key(*cert, *key) != 0 ||
+        gnutls_x509_crt_set_version(*cert, 3) != 0 ||
+        gnutls_x509_crt_set_activation_time(*cert, 0) != 0 ||
+        gnutls_x509_crt_set_expiration_time(*cert, 2147483647) != 0 ||
+        gnutls_x509_crt_set_dn(*cert, "cn=mlvpn", NULL) != 0 ||
+        gnutls_x509_crt_sign2(*cert, *cert, *key, GNUTLS_DIG_SHA256, 0) != 0) {
+        gnutls_x509_privkey_deinit(*key);
+        gnutls_x509_crt_deinit(*cert);
+        return -1;
+    }
+    return 0;
+}
+
+static int
 quic_verify_cert_cb(gnutls_session_t session)
 {
-    (void)session;
-    return 0;
+    unsigned int list_size;
+    const gnutls_datum_t *peers;
+    gnutls_x509_crt_t peer_cert, expected_cert;
+    gnutls_x509_privkey_t expected_key;
+    unsigned char peer_fp[32], expected_fp[32];
+    size_t peer_fp_len = sizeof(peer_fp);
+    size_t expected_fp_len = sizeof(expected_fp);
+    int ret = -1;
+
+    peers = gnutls_certificate_get_peers(session, &list_size);
+    if (peers == NULL || list_size == 0) {
+        return -1;
+    }
+
+    gnutls_x509_crt_init(&peer_cert);
+    if (gnutls_x509_crt_import(peer_cert, &peers[0], GNUTLS_X509_FMT_DER) != 0) {
+        goto done;
+    }
+
+    if (quic_generate_password_cert(&expected_cert, &expected_key) != 0) {
+        goto done;
+    }
+
+    if (gnutls_x509_crt_get_fingerprint(peer_cert, GNUTLS_DIG_SHA256,
+                                        peer_fp, &peer_fp_len) != 0 ||
+        gnutls_x509_crt_get_fingerprint(expected_cert, GNUTLS_DIG_SHA256,
+                                        expected_fp, &expected_fp_len) != 0) {
+        gnutls_x509_privkey_deinit(expected_key);
+        gnutls_x509_crt_deinit(expected_cert);
+        goto done;
+    }
+
+    if (peer_fp_len == expected_fp_len &&
+        sodium_memcmp(peer_fp, expected_fp, peer_fp_len) == 0) {
+        ret = 0;
+    }
+
+    gnutls_x509_privkey_deinit(expected_key);
+    gnutls_x509_crt_deinit(expected_cert);
+
+done:
+    gnutls_x509_crt_deinit(peer_cert);
+    return ret;
 }
 
 static int
@@ -280,16 +370,9 @@ quic_gnutls_init(struct mlvpn_quic_ctx *ctx)
         gnutls_x509_privkey_t key;
         gnutls_x509_crt_t cert;
 
-        gnutls_x509_privkey_init(&key);
-        gnutls_x509_crt_init(&cert);
-        gnutls_x509_privkey_generate(key, GNUTLS_PK_ECDSA,
-            GNUTLS_CURVE_TO_BITS(GNUTLS_ECC_CURVE_SECP256R1), 0);
-        gnutls_x509_crt_set_key(cert, key);
-        gnutls_x509_crt_set_version(cert, 3);
-        gnutls_x509_crt_set_activation_time(cert, time(NULL));
-        gnutls_x509_crt_set_expiration_time(cert, time(NULL) + 365 * 24 * 3600);
-        gnutls_x509_crt_set_dn(cert, "cn=mlvpn", NULL);
-        gnutls_x509_crt_sign2(cert, cert, key, GNUTLS_DIG_SHA256, 0);
+        if (quic_generate_password_cert(&cert, &key) != 0) {
+            return -1;
+        }
         gnutls_certificate_set_x509_key(ctx->cred, &cert, 1, key);
         gnutls_x509_crt_deinit(cert);
         gnutls_x509_privkey_deinit(key);
