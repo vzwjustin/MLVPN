@@ -642,6 +642,12 @@ quic_write_packets(struct mlvpn_quic_ctx *ctx)
     return QUIC_OK;
 }
 
+int
+mlvpn_quic_global_init(void)
+{
+    return gnutls_global_init();
+}
+
 struct mlvpn_quic_ctx *
 mlvpn_quic_create(struct mlvpn_tunnel_s *tun, int server_mode, int fd,
                   const struct sockaddr *local_addr, socklen_t local_addrlen,

@@ -41,4 +41,6 @@ int mlvpn_quic_is_connected(struct mlvpn_quic_ctx *ctx);
 
 int mlvpn_quic_needs_flush(struct mlvpn_quic_ctx *ctx);
 
+int mlvpn_quic_global_init(void);
+
 #endif

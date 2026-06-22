@@ -26,8 +26,14 @@ fi
 if ! id -u mlvpn &>/dev/null; then
     sudo useradd -r -d /run/mlvpn -s /usr/sbin/nologin mlvpn
 fi
-sudo mkdir -p /run/mlvpn
-sudo chown mlvpn:mlvpn /run/mlvpn
+sudo mkdir -p /run/mlvpn/dev
+if [ ! -c /run/mlvpn/dev/urandom ]; then
+    sudo mknod -m 666 /run/mlvpn/dev/urandom c 1 9
+fi
+if [ ! -c /run/mlvpn/dev/random ]; then
+    sudo mknod -m 666 /run/mlvpn/dev/random c 1 8
+fi
+sudo chown -R mlvpn:mlvpn /run/mlvpn
 
 cat >"$WORKDIR/server.conf" <<'EOF'
 [general]
