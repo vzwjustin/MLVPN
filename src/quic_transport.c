@@ -470,12 +470,14 @@ quic_conn_init(struct mlvpn_quic_ctx *ctx)
 
     scid.datalen = 8;
     if (gnutls_rnd(GNUTLS_RND_RANDOM, scid.data, scid.datalen) != 0) {
+        log_warnx("quic", "%s SCID random generation failed", ctx->tun->name);
         return -1;
     }
 
     if (ctx->server_mode) {
         dcid.datalen = NGTCP2_MIN_INITIAL_DCIDLEN;
         if (gnutls_rnd(GNUTLS_RND_RANDOM, dcid.data, dcid.datalen) != 0) {
+            log_warnx("quic", "%s DCID random generation failed", ctx->tun->name);
             return -1;
         }
         rv = ngtcp2_conn_server_new(&ctx->conn, &scid, &dcid, &path,
@@ -484,6 +486,7 @@ quic_conn_init(struct mlvpn_quic_ctx *ctx)
     } else {
         dcid.datalen = NGTCP2_MIN_INITIAL_DCIDLEN;
         if (gnutls_rnd(GNUTLS_RND_RANDOM, dcid.data, dcid.datalen) != 0) {
+            log_warnx("quic", "%s DCID random generation failed", ctx->tun->name);
             return -1;
         }
         rv = ngtcp2_conn_client_new(&ctx->conn, &dcid, &scid, &path,
@@ -516,10 +519,17 @@ quic_send_udp(struct mlvpn_quic_ctx *ctx, const uint8_t *data, size_t datalen)
 
     msg.msg_iov = &iov;
     msg.msg_iovlen = 1;
-    if (!ctx->server_mode) {
-        msg.msg_name = (void *)&ctx->remote_addr;
-        msg.msg_namelen = ctx->remote_addrlen;
+    if (ctx->remote_addrlen == 0) {
+        if (datalen > sizeof(ctx->udp_out)) {
+            return QUIC_ERROR;
+        }
+        memcpy(ctx->udp_out, data, datalen);
+        ctx->udp_out_len = datalen;
+        ctx->blocked = 1;
+        return QUIC_BLOCKED;
     }
+    msg.msg_name = (void *)&ctx->remote_addr;
+    msg.msg_namelen = ctx->remote_addrlen;
 
     do {
         nwrite = sendmsg(ctx->fd, &msg, 0);
@@ -674,7 +684,7 @@ mlvpn_quic_create(struct mlvpn_tunnel_s *tun, int server_mode, int fd,
     }
 
     if (mlvpn_quic_flush(ctx) < 0) {
-        goto fail;
+        log_warnx("quic", "%s initial QUIC flush failed", tun->name);
     }
 
     return ctx;
