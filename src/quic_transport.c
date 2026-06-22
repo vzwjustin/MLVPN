@@ -253,41 +253,52 @@ quic_tls_seed(unsigned char seed[32])
     return crypto_generichash(seed, 32, key, sizeof(key), label, sizeof(label) - 1);
 }
 
+static void
+quic_scalar_from_seed(unsigned char scalar[32], const unsigned char seed[32])
+{
+    /* SECP256R1 scalars must be in (0, n). A 31-byte value is always < n. */
+    memset(scalar, 0, sizeof(scalar));
+    memcpy(scalar + 1, seed, 31);
+    if (memcmp(scalar, "\0", sizeof(scalar)) == 0) {
+        scalar[31] = 1;
+    }
+}
+
 static int
 quic_generate_password_cert(gnutls_x509_crt_t *cert,
                             gnutls_x509_privkey_t *key)
 {
-    unsigned char seed[32];
+    unsigned char seed[32], scalar[32];
     gnutls_datum_t k;
-
-    if (quic_tls_seed(seed) != 0) {
-        return -1;
-    }
 
     gnutls_x509_privkey_init(key);
     gnutls_x509_crt_init(cert);
 
-    k.data = seed;
-    k.size = sizeof(seed);
     for (unsigned int attempt = 0; attempt < 8; attempt++) {
+        if (attempt == 0) {
+            if (quic_tls_seed(seed) != 0) {
+                goto fail;
+            }
+        } else {
+            gnutls_x509_privkey_deinit(*key);
+            gnutls_x509_privkey_init(key);
+            if (crypto_generichash(seed, sizeof(seed), seed, sizeof(seed),
+                                   (unsigned char *)"retry", 5) != 0) {
+                goto fail;
+            }
+        }
+
+        quic_scalar_from_seed(scalar, seed);
+        k.data = scalar;
+        k.size = sizeof(scalar);
         if (gnutls_x509_privkey_import_ecc_raw(*key, GNUTLS_ECC_CURVE_SECP256R1,
                                                NULL, NULL, &k) == 0) {
             break;
         }
         if (attempt == 7) {
             log_warnx("quic", "password-derived TLS key import failed");
-            gnutls_x509_privkey_deinit(*key);
-            gnutls_x509_crt_deinit(*cert);
-            return -1;
+            goto fail;
         }
-        if (crypto_generichash(seed, sizeof(seed), seed, sizeof(seed),
-                               (unsigned char *)"retry", 5) != 0) {
-            gnutls_x509_privkey_deinit(*key);
-            gnutls_x509_crt_deinit(*cert);
-            return -1;
-        }
-        k.data = seed;
-        k.size = sizeof(seed);
     }
     gnutls_x509_privkey_fix(*key);
 
@@ -297,11 +308,14 @@ quic_generate_password_cert(gnutls_x509_crt_t *cert,
         gnutls_x509_crt_set_expiration_time(*cert, 2147483647) != 0 ||
         gnutls_x509_crt_set_dn(*cert, "cn=mlvpn", NULL) != 0 ||
         gnutls_x509_crt_sign2(*cert, *cert, *key, GNUTLS_DIG_SHA256, 0) != 0) {
-        gnutls_x509_privkey_deinit(*key);
-        gnutls_x509_crt_deinit(*cert);
-        return -1;
+        goto fail;
     }
     return 0;
+
+fail:
+    gnutls_x509_privkey_deinit(*key);
+    gnutls_x509_crt_deinit(*cert);
+    return -1;
 }
 
 static int
