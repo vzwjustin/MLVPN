@@ -68,7 +68,7 @@ EOF
 chmod 0600 "$WORKDIR/server.conf" "$WORKDIR/client.conf"
 
 FAIL_PAT='\[CRIT|fatal|unable to chroot|TLS init failed|incorrect password|quic_create|unable to open /dev/net/tun|failed to open|sendmsg failed|ngtcp2_conn_'
-SERVER_READY_PAT='\[INFO/quic\].*QUIC transport enabled'
+SERVER_READY_PAT='\[INFO/quic\].*QUIC transport enabled|created interface'
 QUIC_FIXTURES="/run/mlvpn/quic-ci"
 sudo mkdir -p "$QUIC_FIXTURES"
 sudo cp "$(dirname "$0")/quic-fixtures/server.crt" "$(dirname "$0")/quic-fixtures/server.key" "$QUIC_FIXTURES/"
