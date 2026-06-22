@@ -388,16 +388,18 @@ mlvpn_control_parse(struct mlvpn_control *ctrl, char *line)
 void mlvpn_control_write_metrics(struct mlvpn_control *ctrl)
 {
     char buf[1024];
-    size_t ret;
     mlvpn_tunnel_t *t;
 
 #define control_writef(fmt, ...) do { \
-    ret = snprintf(buf, sizeof(buf), (fmt), ##__VA_ARGS__); \
-    if (ret < 0) \
-        ret = 0; \
-    else if ((size_t)ret >= sizeof(buf)) \
-        ret = sizeof(buf) - 1; \
-    mlvpn_control_write(ctrl, buf, ret); \
+    int n = snprintf(buf, sizeof(buf), (fmt), ##__VA_ARGS__); \
+    size_t len; \
+    if (n < 0) \
+        len = 0; \
+    else if ((size_t)n >= sizeof(buf)) \
+        len = sizeof(buf) - 1; \
+    else \
+        len = (size_t)n; \
+    mlvpn_control_write(ctrl, buf, len); \
 } while (0)
 
     control_writef("uptime %u\n", (uint32_t) mlvpn_status.start_time);
@@ -429,10 +431,11 @@ void mlvpn_control_write_metrics(struct mlvpn_control *ctrl)
 void mlvpn_control_write_status(struct mlvpn_control *ctrl)
 {
     char buf[1024];
-    size_t ret;
+    size_t len;
+    int n;
     mlvpn_tunnel_t *t;
 
-    ret = snprintf(buf, 1024, JSON_STATUS_BASE,
+    n = snprintf(buf, sizeof(buf), JSON_STATUS_BASE,
         _progname,
         MLVPN_VERSION_MAJOR, MLVPN_VERSION_MINOR,
         (uint32_t) mlvpn_status.start_time,
@@ -441,11 +444,13 @@ void mlvpn_control_write_status(struct mlvpn_control *ctrl)
         tuntap.type == MLVPN_TUNTAPMODE_TUN ? "tun" : "tap",
         tuntap.devname
     );
-    if (ret < 0)
-        ret = 0;
-    else if ((size_t)ret >= sizeof(buf))
-        ret = sizeof(buf) - 1;
-    mlvpn_control_write(ctrl, buf, ret);
+    if (n < 0)
+        len = 0;
+    else if ((size_t)n >= sizeof(buf))
+        len = sizeof(buf) - 1;
+    else
+        len = (size_t)n;
+    mlvpn_control_write(ctrl, buf, len);
     LIST_FOREACH(t, &rtuns, entries)
     {
         char *mode = t->server_mode ? "server" : "client";
@@ -464,7 +469,7 @@ void mlvpn_control_write_status(struct mlvpn_control *ctrl)
         else
             status = "unknown";
 
-        ret = snprintf(buf, 1024, JSON_STATUS_RTUN,
+        n = snprintf(buf, sizeof(buf), JSON_STATUS_RTUN,
                        t->name,
                        mode,
                        *t->bindaddr ? t->bindaddr : "any",
@@ -484,11 +489,13 @@ void mlvpn_control_write_status(struct mlvpn_control *ctrl)
                        (uint32_t)t->timeout,
                        (LIST_NEXT(t, entries) ? "," : "")
                       );
-        if (ret < 0)
-            ret = 0;
-        else if ((size_t)ret >= sizeof(buf))
-            ret = sizeof(buf) - 1;
-        mlvpn_control_write(ctrl, buf, ret);
+        if (n < 0)
+            len = 0;
+        else if ((size_t)n >= sizeof(buf))
+            len = sizeof(buf) - 1;
+        else
+            len = (size_t)n;
+        mlvpn_control_write(ctrl, buf, len);
     }
     mlvpn_control_write(ctrl, "]}\n", 3);
 }
