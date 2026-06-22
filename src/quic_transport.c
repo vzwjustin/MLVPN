@@ -542,18 +542,6 @@ quic_init_transport_params(ngtcp2_transport_params *params)
 }
 
 static void
-quic_cid_from_raw(ngtcp2_cid *cid, const uint8_t *data, size_t datalen)
-{
-    if (datalen > NGTCP2_MAX_CIDLEN) {
-        datalen = NGTCP2_MAX_CIDLEN;
-    }
-    cid->datalen = datalen;
-    if (datalen > 0) {
-        memcpy(cid->data, data, datalen);
-    }
-}
-
-static void
 quic_conn_reset(struct mlvpn_quic_ctx *ctx)
 {
     if (ctx->conn != NULL) {
@@ -911,8 +899,8 @@ mlvpn_quic_input(struct mlvpn_quic_ctx *ctx, const uint8_t *pkt, size_t pktlen,
     ngtcp2_pkt_info pi = {0};
     int rv;
 
-    if (ctx == NULL || ctx->conn == NULL) {
-        return -1;
+    if (ctx == NULL) {
+        return QUIC_ERROR;
     }
 
     if (remote_addr != NULL && remote_addrlen > 0) {
@@ -929,6 +917,10 @@ mlvpn_quic_input(struct mlvpn_quic_ctx *ctx, const uint8_t *pkt, size_t pktlen,
         if (quic_server_accept(ctx, pkt, pktlen, &path) != 0) {
             return QUIC_OK;
         }
+    }
+
+    if (ctx->conn == NULL) {
+        return QUIC_OK;
     }
 
     rv = ngtcp2_conn_read_pkt(ctx->conn, &path, &pi, pkt, pktlen,
