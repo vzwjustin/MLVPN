@@ -63,3 +63,21 @@ If your data are going to the internet anyway, there is no point in trying to ci
 another time using mlvpn. (encrypting an ssh or https connections does not give you much benefit)
 
 Encryption is done using the XSalsa20 algorithm.
+
+QUIC transport
+--------------
+When ``transport = "quic"`` is set in ``mlvpn.conf`` (requires a build with
+``--enable-quic``), link traffic uses userspace QUIC (ngtcp2) with TLS 1.3
+(GnuTLS) instead of MLVPN's native UDP framing.
+
+The shared ``password`` derives a TLS certificate fingerprint. During the QUIC
+handshake, each peer verifies that the remote certificate matches the fingerprint
+expected from the configured password. This binds QUIC peers to the same secret
+without shipping a separate certificate file.
+
+MLVPN application data still uses the usual libsodium authentication and
+encryption on top of the QUIC stream once the tunnel is up.
+
+For automated testing only, the environment variables ``MLVPN_QUIC_INSECURE`` and
+``MLVPN_QUIC_FIXTURES`` allow loading fixed PEM fixtures instead of password-derived
+credentials. Do not use these in production.

@@ -17,8 +17,30 @@ MLVPN will do its best to achieve the following tasks:
   * Secure your internet connection to the aggregation server using
     strong cryptography.
   * Scriptable automation and monitoring.
+  * Optional userspace QUIC transport (ngtcp2 + GnuTLS) instead of raw UDP.
 
-## Quick install
+## Transport
+
+MLVPN supports two link transports, selected in `mlvpn.conf` with `transport`:
+
+| Value | Description |
+|-------|-------------|
+| `udp` | Default. MLVPN's native encrypted UDP framing (libsodium). |
+| `quic` | Userspace QUIC (ngtcp2 + GnuTLS). Requires `./configure --enable-quic`. |
+
+With QUIC enabled, the shared `password` also derives the TLS certificate fingerprint
+used during the QUIC handshake. Both ends must use the same password and transport.
+
+Example:
+
+```ini
+[general]
+transport = "quic"
+password = "your-shared-secret"
+```
+
+See `doc/examples/mlvpn.conf` for a full sample configuration.
+
 
 ### A Nice tutorial using OpenBSD
 
@@ -83,12 +105,16 @@ The binary will end up in `./result/bin`
 ## Build from source (debian / arch)
 
 ```sh
-# Debian
+# Debian
 $ sudo apt-get install build-essential make autoconf automake libev-dev libsodium-dev libpcap-dev pkg-config
-# OR ArchLinux
+# Optional: QUIC transport
+$ sudo apt-get install libngtcp2-dev libngtcp2-crypto-gnutls-dev libgnutls28-dev
+# OR ArchLinux
 $ sudo pacman -S base-devel git libev libsodium
 $ ./autogen.sh
 $ ./configure
+# OR with QUIC:
+$ ./configure --enable-quic
 $ make
 $ make install
 ```
@@ -138,9 +164,15 @@ make install
 ## Dependencies
   - libev
   - libsodium
-  - libpcap (optional)
+  - libpcap (optional, for filters)
+  - libngtcp2, libngtcp2-crypto-gnutls, GnuTLS (optional, for `--enable-quic`)
 
-## Security
+## Continuous integration
+
+GitHub Actions builds both UDP and QUIC configurations on Ubuntu. The QUIC job runs
+`scripts/ci/quic-smoke.sh`, which starts a local server and client and waits for
+`QUIC session established` in the client log. See `scripts/ci/README.md` for details.
+
 
 ### Privilege separation
 MLVPN uses privilege separation to keep high privileges operations

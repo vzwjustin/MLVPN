@@ -59,6 +59,19 @@ The **[general]** section is reserved for global configuration.
     The password string is used to generate a key used by libsodium.
     Password is mandatory and must be the same on the client and on the server.
 
+    When `transport = "quic"`, the same password also derives the TLS
+    certificate fingerprint verified during the QUIC handshake.
+
+  - _transport_ = "udp"
+
+    Link transport between client and server.
+
+    - "udp": default MLVPN encrypted UDP framing (always available)
+    - "quic": userspace QUIC via ngtcp2 and GnuTLS (requires build with
+      `--enable-quic`)
+
+    Both ends must use the same transport value.
+
   - _cleartext_data_
     If set to 1, data packets will **NOT** be encrypted.
 

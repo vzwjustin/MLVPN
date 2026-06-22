@@ -5,8 +5,9 @@ What is mlvpn
 mlvpn is a piece of software, similar to OpenVPN_, which can create a network
 tunnel between two computers.
 
-mlvpn encapsulates network packets, using UDP and sends them encrypted over the
-internet to another location.
+mlvpn encapsulates network packets and sends them encrypted over the
+internet to another location. By default this uses UDP; an optional QUIC
+transport (`transport = "quic"`, build with `--enable-quic`) is also available.
 
 The primary use of mlvpn is to create bonded/aggregated_ network links in order to
 benefit from the bandwidth of multiple links.
@@ -22,6 +23,7 @@ Features
   * Bandwidth aggregation of multiple internet connections
   * Automatic failover, without changing IP addresses or interrupting TCP connections in case of a failure
   * Encrypt and authenticate connections using libsodium_.
+  * Optional QUIC transport (TLS 1.3 via ngtcp2 + GnuTLS) as an alternative to UDP
   * Hot configuration reload (by signaling SIGHUP)
   * Scriptable monitoring
   * Remote monitoring through UNIX socket or TCP/HTTP socket. (JSON API)

@@ -21,6 +21,7 @@ Tokens available:
     - protocol: protocol things (MOST COMMON to use for debugging)
     - reorder: reordering algorithm
     - rtt: latency measurements
+    - quic: QUIC transport (handshake, TLS, UDP I/O)
     - tuntap: system tuntap
     - wrr: weighted round robin
 

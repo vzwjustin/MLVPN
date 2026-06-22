@@ -13,6 +13,10 @@ mlvpn.conf
 ----------
 
   * **protocol** is not supported anymore. Only UDP is supported.
+  * **transport** is a new optional setting: `udp` (default) or `quic`.
+    QUIC requires a build with `./configure --enable-quic` and matching
+    settings on client and server. With QUIC, the **password** also derives
+    the TLS certificate fingerprint used during the handshake.
   * **loglevel** is not supported anymore.
   * **password** is a new **mandatory* setting used for auth and cipher.
   * **bandwidth_download** must be replaced by bandwidth_upload on the server
