@@ -1117,8 +1117,10 @@ mlvpn_rtun_start(mlvpn_tunnel_t *t)
         }
         ev_timer_start(EV_A_ &t->quic_timer);
         log_info("quic", "%s QUIC transport enabled", t->name);
-        if (mlvpn_quic_needs_flush(t->quic) && !ev_is_active(&t->io_write)) {
-            ev_io_start(EV_A_ &t->io_write);
+        if (!t->server_mode || mlvpn_quic_needs_flush(t->quic)) {
+            if (!ev_is_active(&t->io_write)) {
+                ev_io_start(EV_A_ &t->io_write);
+            }
         }
     }
 #endif

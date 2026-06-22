@@ -748,10 +748,6 @@ mlvpn_quic_create(struct mlvpn_tunnel_s *tun, int server_mode, int fd,
 
     log_info("quic", "%s QUIC connection initialized", tun->name);
 
-    if (mlvpn_quic_flush(ctx) < 0) {
-        log_warnx("quic", "%s initial QUIC flush failed", tun->name);
-    }
-
     return ctx;
 
 fail:
