@@ -189,7 +189,7 @@ priv_init(char *argv[], char *username)
             warnx("running on valgrind, keep privileges");
         } else {
             /* Child - drop privileges and return */
-            if (is_root && pw)
+            if (is_root && pw && getenv("MLVPN_SKIP_CHROOT") == NULL)
             {
                 if (chroot(pw->pw_dir) != 0)
                     err(1, "unable to chroot");

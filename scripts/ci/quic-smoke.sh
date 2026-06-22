@@ -70,7 +70,7 @@ chmod 0600 "$WORKDIR/server.conf" "$WORKDIR/client.conf"
 FAIL_PAT='\[CRIT|fatal|unable to chroot|TLS init failed|incorrect password|quic_create|unable to open /dev/net/tun|failed to open|sendmsg failed|ngtcp2_conn_'
 SERVER_READY_PAT='\[INFO/quic\].*QUIC transport enabled'
 
-sudo stdbuf -oL -eL "$MLVPN" --debug -v -c "$WORKDIR/server.conf" -u mlvpn \
+sudo stdbuf -oL -eL env MLVPN_SKIP_CHROOT=1 "$MLVPN" --debug -v -c "$WORKDIR/server.conf" -u mlvpn \
     >"$WORKDIR/server.log" 2>&1 &
 
 for _ in $(seq 1 30); do
@@ -93,7 +93,7 @@ fi
 
 sleep 1
 
-sudo stdbuf -oL -eL "$MLVPN" --debug -v -c "$WORKDIR/client.conf" -u mlvpn \
+sudo stdbuf -oL -eL env MLVPN_SKIP_CHROOT=1 "$MLVPN" --debug -v -c "$WORKDIR/client.conf" -u mlvpn \
     >"$WORKDIR/client.log" 2>&1 &
 
 for _ in $(seq 1 30); do
