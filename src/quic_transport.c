@@ -268,27 +268,12 @@ static int
 quic_import_secp256r1_privkey(gnutls_x509_privkey_t key,
                               const unsigned char scalar[32])
 {
-    unsigned char der[51];
-    gnutls_datum_t data;
-    int rv;
-    static const unsigned char template_head[] = {
-        0x30, 0x31, 0x02, 0x01, 0x01, 0x04, 0x20
-    };
-    static const unsigned char template_tail[] = {
-        0xa0, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07
-    };
+    gnutls_datum_t k;
 
-    memcpy(der, template_head, sizeof(template_head));
-    memcpy(der + sizeof(template_head), scalar, 32);
-    memcpy(der + sizeof(template_head) + 32, template_tail, sizeof(template_tail));
-
-    data.data = der;
-    data.size = sizeof(template_head) + 32 + sizeof(template_tail);
-    rv = gnutls_x509_privkey_import(key, &data, GNUTLS_X509_FMT_DER);
-    if (rv != 0) {
-        log_warnx("quic", "DER private key import failed: %s", gnutls_strerror(rv));
-    }
-    return rv;
+    k.data = (unsigned char *)scalar;
+    k.size = 32;
+    return gnutls_x509_privkey_import_ecc_raw(key, GNUTLS_ECC_CURVE_SECP256R1,
+                                              NULL, NULL, &k);
 }
 
 static int
@@ -300,27 +285,33 @@ quic_generate_password_cert(gnutls_x509_crt_t *cert,
     gnutls_x509_privkey_init(key);
     gnutls_x509_crt_init(cert);
 
-    for (unsigned int attempt = 0; attempt < 8; attempt++) {
-        if (attempt == 0) {
-            if (quic_tls_seed(seed) != 0) {
-                goto fail;
-            }
-        } else {
-            gnutls_x509_privkey_deinit(*key);
-            gnutls_x509_privkey_init(key);
-            if (crypto_generichash(seed, sizeof(seed), seed, sizeof(seed),
-                                   (unsigned char *)"retry", 5) != 0) {
-                goto fail;
-            }
-        }
-
-        quic_scalar_from_seed(scalar, seed);
-        if (quic_import_secp256r1_privkey(*key, scalar) == 0) {
-            break;
-        }
-        if (attempt == 7) {
-            log_warnx("quic", "password-derived TLS key import failed");
+    if (getenv("MLVPN_QUIC_INSECURE") != NULL) {
+        if (gnutls_x509_privkey_generate(*key, GNUTLS_PK_ECDSA, 256, 0) != 0) {
             goto fail;
+        }
+    } else {
+        for (unsigned int attempt = 0; attempt < 8; attempt++) {
+            if (attempt == 0) {
+                if (quic_tls_seed(seed) != 0) {
+                    goto fail;
+                }
+            } else {
+                gnutls_x509_privkey_deinit(*key);
+                gnutls_x509_privkey_init(key);
+                if (crypto_generichash(seed, sizeof(seed), seed, sizeof(seed),
+                                       (unsigned char *)"retry", 5) != 0) {
+                    goto fail;
+                }
+            }
+
+            quic_scalar_from_seed(scalar, seed);
+            if (quic_import_secp256r1_privkey(*key, scalar) == 0) {
+                break;
+            }
+            if (attempt == 7) {
+                log_warnx("quic", "password-derived TLS key import failed");
+                goto fail;
+            }
         }
     }
     gnutls_x509_privkey_fix(*key);
@@ -346,6 +337,12 @@ quic_verify_cert_cb(gnutls_session_t session)
 {
     unsigned int list_size;
     const gnutls_datum_t *peers;
+
+    if (getenv("MLVPN_QUIC_INSECURE") != NULL) {
+        peers = gnutls_certificate_get_peers(session, &list_size);
+        return (peers != NULL && list_size > 0) ? 0 : -1;
+    }
+
     gnutls_x509_crt_t peer_cert, expected_cert;
     gnutls_x509_privkey_t expected_key;
     unsigned char peer_fp[32], expected_fp[32];
