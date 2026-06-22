@@ -366,9 +366,6 @@ quic_gnutls_init(struct mlvpn_quic_ctx *ctx)
     int rv;
 
     if (!gnutls_ready) {
-        if (gnutls_global_init() != 0) {
-            return -1;
-        }
         gnutls_ready = 1;
     }
 

@@ -1793,11 +1793,6 @@ main(int argc, char **argv)
     if (crypto_init() == -1)
         fatal(NULL, "libsodium initialization failed");
 
-#ifdef HAVE_QUIC
-    if (mlvpn_quic_global_init() != 0)
-        fatal(NULL, "GnuTLS initialization failed");
-#endif
-
     log_init(mlvpn_options.debug, mlvpn_options.verbose, mlvpn_options.process_name);
 
 #ifdef HAVE_LINUX
@@ -1826,6 +1821,11 @@ main(int argc, char **argv)
     mlvpn_tuntap_init();
     if (mlvpn_config(config_fd, 1) != 0)
         fatalx("cannot open config file");
+
+#ifdef HAVE_QUIC
+    if (mlvpn_options.use_quic && mlvpn_quic_global_init() != 0)
+        fatal(NULL, "GnuTLS initialization failed");
+#endif
 
     if (mlvpn_tuntap_alloc(&tuntap) <= 0)
         fatalx("cannot create tunnel device");
