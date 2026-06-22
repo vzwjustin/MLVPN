@@ -867,6 +867,10 @@ mlvpn_quic_create(struct mlvpn_tunnel_s *tun, int server_mode, int fd,
             goto fail;
         }
         log_info("quic", "%s QUIC connection initialized", tun->name);
+        if (mlvpn_quic_flush(ctx) < 0) {
+            log_warnx("quic", "%s initial QUIC flush failed", tun->name);
+            goto fail;
+        }
     } else {
         log_info("quic", "%s QUIC listener ready", tun->name);
     }
@@ -928,8 +932,9 @@ mlvpn_quic_input(struct mlvpn_quic_ctx *ctx, const uint8_t *pkt, size_t pktlen,
 
     rv = ngtcp2_conn_read_pkt(ctx->conn, &path, &pi, pkt, pktlen,
                               quic_timestamp());
-    if (rv == NGTCP2_ERR_DROP_CONN) {
-        log_debug("quic", "%s dropping QUIC connection", ctx->tun->name);
+    if (rv == NGTCP2_ERR_DROP_CONN || rv == NGTCP2_ERR_IDLE_CLOSE) {
+        log_debug("quic", "%s dropping QUIC connection: %s",
+                  ctx->tun->name, ngtcp2_strerror(rv));
         quic_conn_reset(ctx);
         return QUIC_OK;
     }
@@ -974,13 +979,17 @@ mlvpn_quic_flush(struct mlvpn_quic_ctx *ctx)
 {
     int ret;
 
-    if (ctx == NULL || ctx->conn == NULL) {
-        return QUIC_OK;
+    if (ctx == NULL) {
+        return QUIC_ERROR;
     }
 
     ret = quic_send_udp_pending(ctx);
     if (ret != QUIC_OK) {
         return ret;
+    }
+
+    if (ctx->conn == NULL) {
+        return QUIC_OK;
     }
 
     ret = quic_drain_outbound(ctx);
@@ -1019,6 +1028,10 @@ mlvpn_quic_handle_expiry(struct mlvpn_quic_ctx *ctx)
         return QUIC_OK;
     }
     rv = ngtcp2_conn_handle_expiry(ctx->conn, quic_timestamp());
+    if (rv == NGTCP2_ERR_DROP_CONN || rv == NGTCP2_ERR_IDLE_CLOSE) {
+        quic_conn_reset(ctx);
+        return QUIC_OK;
+    }
     if (rv != 0) {
         return QUIC_ERROR;
     }
