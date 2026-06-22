@@ -25,6 +25,9 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#ifdef HAVE_LINUX
+#include <sys/sysmacros.h>
+#endif
 #include <netdb.h>
 #include <err.h>
 #include <errno.h>
@@ -101,6 +104,34 @@ static void must_write(int, void *, size_t);
 static int  may_read(int, void *, size_t);
 static void reset_default_signals();
 
+static void
+priv_ensure_chroot_dev(const char *chroot_dir)
+{
+    char path[MAXPATHLEN];
+    struct stat st;
+
+    snprintf(path, sizeof(path), "%s/dev", chroot_dir);
+    if (mkdir(path, 0755) != 0 && errno != EEXIST) {
+        err(1, "unable to create %s", path);
+    }
+
+    snprintf(path, sizeof(path), "%s/dev/urandom", chroot_dir);
+    if (stat(path, &st) != 0) {
+        if (mknod(path, S_IFCHR | S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP |
+                        S_IROTH | S_IWOTH, makedev(1, 9)) != 0 && errno != EEXIST) {
+            err(1, "unable to create %s", path);
+        }
+    }
+
+    snprintf(path, sizeof(path), "%s/dev/random", chroot_dir);
+    if (stat(path, &st) != 0) {
+        if (mknod(path, S_IFCHR | S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP |
+                        S_IROTH | S_IWOTH, makedev(1, 8)) != 0 && errno != EEXIST) {
+            err(1, "unable to create %s", path);
+        }
+    }
+}
+
 int
 priv_init(char *argv[], char *username)
 {
@@ -144,6 +175,8 @@ priv_init(char *argv[], char *username)
         pw = getpwnam(username);
         if (pw == NULL)
             errx(1, "unknown user %s", username);
+        if (is_root)
+            priv_ensure_chroot_dev(pw->pw_dir);
     }
 
     child_pid = fork();
