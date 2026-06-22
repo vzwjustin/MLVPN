@@ -114,6 +114,7 @@ struct mlvpn_options_s
     int root_allowed;
     uint32_t reorder_buffer_size;
     uint32_t fallback_available;
+    int use_quic;
 };
 
 struct mlvpn_status_s
@@ -182,6 +183,10 @@ typedef struct mlvpn_tunnel_s
     ev_io io_read;
     ev_io io_write;
     ev_timer io_timeout;
+#ifdef HAVE_QUIC
+    struct mlvpn_quic_ctx *quic;
+    ev_timer quic_timer;
+#endif
 } mlvpn_tunnel_t;
 
 #ifdef HAVE_FILTERS

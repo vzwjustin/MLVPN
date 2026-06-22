@@ -66,10 +66,17 @@ EXTRA_DIST = \
     tuntap_linux.c \
     tuntap_bsd.c \
     systemd.c systemd.h \
-    control.c control.h
+    control.c control.h \
+    quic_transport.c quic_transport.h
 
 mlvpn_LDADD=-lm $(libsodium_LIBS) $(libev_LIBS)
 mlvpn_CFLAGS=$(CFLAGS) $(libsodium_CFLAGS) $(libev_CFLAGS)
+
+if HAVE_QUIC
+mlvpn_SOURCES += quic_transport.c quic_transport.h
+mlvpn_LDADD += $(libngtcp2_LIBS) $(libngtcp2_crypto_gnutls_LIBS) $(gnutls_LIBS)
+mlvpn_CFLAGS += $(libngtcp2_CFLAGS) $(libngtcp2_crypto_gnutls_CFLAGS) $(gnutls_CFLAGS)
+endif
 
 if HAVE_FILTERS
 mlvpn_SOURCES += filters.c

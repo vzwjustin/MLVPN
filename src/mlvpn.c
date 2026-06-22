@@ -54,6 +54,10 @@
 #endif
 #include "tuntap_generic.h"
 
+#ifdef HAVE_QUIC
+#include "quic_transport.h"
+#endif
+
 /* Linux specific things */
 #ifdef HAVE_LINUX
 #include <sys/prctl.h>
@@ -116,7 +120,8 @@ struct mlvpn_options_s mlvpn_options = {
     .unpriv_user = "mlvpn",
     .cleartext_data = 1,
     .root_allowed = 0,
-    .reorder_buffer_size = 0
+    .reorder_buffer_size = 0,
+    .use_quic = 0
 };
 #ifdef HAVE_FILTERS
 struct mlvpn_filters_s mlvpn_filters = {
@@ -145,6 +150,11 @@ static struct option long_options[] = {
 static int mlvpn_rtun_start(mlvpn_tunnel_t *t);
 static void mlvpn_rtun_read(EV_P_ ev_io *w, int revents);
 static void mlvpn_rtun_write(EV_P_ ev_io *w, int revents);
+#ifdef HAVE_QUIC
+static void mlvpn_quic_on_data(mlvpn_tunnel_t *tun, const uint8_t *data, size_t len);
+static void mlvpn_quic_on_connected(mlvpn_tunnel_t *tun);
+static void mlvpn_quic_timer_cb(EV_P_ ev_timer *w, int revents);
+#endif
 static uint32_t mlvpn_rtun_reorder_drain(uint32_t reorder);
 static void mlvpn_rtun_reorder_drain_timeout(EV_P_ ev_timer *w, int revents);
 static void mlvpn_rtun_check_timeout(EV_P_ ev_timer *w, int revents);
@@ -340,6 +350,64 @@ mlvpn_rtun_recv_data(mlvpn_tunnel_t *tun, mlvpn_pkt_t *inpkt)
     return drained;
 }
 
+#ifdef HAVE_QUIC
+static void
+mlvpn_quic_on_data(mlvpn_tunnel_t *tun, const uint8_t *data, size_t len)
+{
+    mlvpn_pkt_t pkt;
+
+    if (len > sizeof(pkt.data)) {
+        log_warnx("quic", "%s oversized packet (%zu)", tun->name, len);
+        return;
+    }
+
+    memset(&pkt, 0, sizeof(pkt));
+    pkt.len = (uint16_t)len;
+    memcpy(pkt.data, data, len);
+    pkt.type = MLVPN_PKT_DATA;
+    pkt.reorder = 1;
+
+    tun->recvbytes += len;
+    tun->recvpackets += 1;
+    mlvpn_rtun_tick(tun);
+
+    if (tun->status >= MLVPN_AUTHOK) {
+        mlvpn_rtun_recv_data(tun, &pkt);
+    }
+}
+
+static void
+mlvpn_quic_on_connected(mlvpn_tunnel_t *tun)
+{
+    log_info("quic", "%s QUIC session established", tun->name);
+    tun->status = MLVPN_AUTHOK;
+    mlvpn_rtun_tick(tun);
+    mlvpn_rtun_status_up(tun);
+}
+
+static void
+mlvpn_quic_timer_cb(EV_P_ ev_timer *w, int revents)
+{
+    mlvpn_tunnel_t *tun = w->data;
+    (void)revents;
+
+    if (tun->quic == NULL) {
+        return;
+    }
+
+    if (mlvpn_quic_handle_expiry(tun->quic) != 0) {
+        mlvpn_rtun_status_down(tun);
+        return;
+    }
+
+    w->repeat = mlvpn_quic_timeout(tun->quic);
+    if (w->repeat < 0.001) {
+        w->repeat = 0.001;
+    }
+    ev_timer_again(EV_A_ w);
+}
+#endif
+
 
 /* read from the rtunnel => write directly to the tap send buffer */
 static void
@@ -350,6 +418,38 @@ mlvpn_rtun_read(EV_P_ ev_io *w, int revents)
     struct sockaddr_storage clientaddr;
     socklen_t addrlen = sizeof(clientaddr);
     mlvpn_pkt_t pkt;
+
+#ifdef HAVE_QUIC
+    if (mlvpn_options.use_quic && tun->quic != NULL) {
+        uint8_t buf[65536];
+        struct iovec iov = {buf, sizeof(buf)};
+        struct msghdr msg = {0};
+
+        msg.msg_name = &clientaddr;
+        msg.msg_iov = &iov;
+        msg.msg_iovlen = 1;
+        msg.msg_namelen = sizeof(clientaddr);
+
+        len = recvmsg(tun->fd, &msg, MSG_DONTWAIT);
+        if (len < 0) {
+            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                log_warn("quic", "%s read error", tun->name);
+                mlvpn_rtun_status_down(tun);
+            }
+            return;
+        }
+        if (len == 0) {
+            return;
+        }
+
+        if (mlvpn_quic_input(tun->quic, buf, (size_t)len,
+                             (struct sockaddr *)&clientaddr, msg.msg_namelen) != 0) {
+            mlvpn_rtun_status_down(tun);
+        }
+        return;
+    }
+#endif
+
     len = recvfrom(tun->fd, pkt.data,
                    sizeof(pkt.data),
                    MSG_DONTWAIT, (struct sockaddr *)&clientaddr, &addrlen);
@@ -539,6 +639,23 @@ mlvpn_rtun_send(mlvpn_tunnel_t *tun, circular_buffer_t *pktbuf)
 
     mlvpn_pkt_t *pkt = mlvpn_pktbuffer_read(pktbuf);
     pkt->reorder = 1;
+
+#ifdef HAVE_QUIC
+    if (mlvpn_options.use_quic && tun->quic != NULL &&
+        mlvpn_quic_is_connected(tun->quic) && pkt->type == MLVPN_PKT_DATA) {
+        int sent = mlvpn_quic_send(tun->quic, (const uint8_t *)pkt->data, pkt->len);
+        if (sent > 0) {
+            tun->sentpackets++;
+            tun->sentbytes += pkt->len;
+            log_debug("quic", "> %s sent %d bytes over QUIC", tun->name, pkt->len);
+        }
+        if (ev_is_active(&tun->io_write) && mlvpn_cb_is_empty(pktbuf)) {
+            ev_io_stop(EV_A_ &tun->io_write);
+        }
+        return sent;
+    }
+#endif
+
     if (pkt->type == MLVPN_PKT_DATA && pkt->reorder) {
         proto.data_seq = data_seq++;
     }
@@ -917,6 +1034,49 @@ mlvpn_rtun_start(mlvpn_tunnel_t *t)
     ev_io_set(&t->io_write, fd, EV_WRITE);
     ev_io_start(EV_A_ &t->io_read);
     t->io_timeout.repeat = MLVPN_IO_TIMEOUT_DEFAULT;
+
+#ifdef HAVE_QUIC
+    if (mlvpn_options.use_quic) {
+        struct sockaddr_storage local_addr, remote_addr;
+        socklen_t local_len = sizeof(local_addr);
+        socklen_t remote_len = 0;
+        const struct sockaddr *remote = NULL;
+
+        if (getsockname(fd, (struct sockaddr *)&local_addr, &local_len) != 0) {
+            log_warn("quic", "%s getsockname failed", t->name);
+            goto error;
+        }
+
+        if (!t->server_mode && t->addrinfo != NULL) {
+            memcpy(&remote_addr, t->addrinfo->ai_addr, t->addrinfo->ai_addrlen);
+            remote_len = t->addrinfo->ai_addrlen;
+            remote = (struct sockaddr *)&remote_addr;
+            if (connect(fd, remote, remote_len) != 0 &&
+                errno != EINPROGRESS && errno != EISCONN) {
+                log_warn("quic", "%s connect failed", t->name);
+                goto error;
+            }
+        }
+
+        t->quic = mlvpn_quic_create(t, t->server_mode, fd,
+            (struct sockaddr *)&local_addr, local_len,
+            remote, remote_len,
+            mlvpn_quic_on_data, mlvpn_quic_on_connected);
+        if (t->quic == NULL) {
+            goto error;
+        }
+
+        ev_init(&t->quic_timer, mlvpn_quic_timer_cb);
+        t->quic_timer.data = t;
+        t->quic_timer.repeat = mlvpn_quic_timeout(t->quic);
+        if (t->quic_timer.repeat < 0.001) {
+            t->quic_timer.repeat = 0.1;
+        }
+        ev_timer_start(EV_A_ &t->quic_timer);
+        log_info("quic", "%s QUIC transport enabled", t->name);
+    }
+#endif
+
     return 0;
 error:
     if (t->fd >= 0) {
@@ -1028,6 +1188,15 @@ mlvpn_rtun_close_socket(mlvpn_tunnel_t *t)
             ev_io_stop(EV_A_ &t->io_read);
         if (ev_is_active(&t->io_write))
             ev_io_stop(EV_A_ &t->io_write);
+#ifdef HAVE_QUIC
+        if (t->quic != NULL) {
+            if (ev_is_active(&t->quic_timer)) {
+                ev_timer_stop(EV_A_ &t->quic_timer);
+            }
+            mlvpn_quic_destroy(t->quic);
+            t->quic = NULL;
+        }
+#endif
         close(t->fd);
         t->fd = -1;
     }
@@ -1169,6 +1338,9 @@ mlvpn_rtun_tick_connect(mlvpn_tunnel_t *t)
                 }
             }
         }
+#ifdef HAVE_QUIC
+        if (!mlvpn_options.use_quic)
+#endif
         mlvpn_rtun_challenge_send(t);
     }
 }
