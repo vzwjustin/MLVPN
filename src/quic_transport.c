@@ -323,6 +323,7 @@ quic_generate_password_cert(gnutls_x509_crt_t *cert,
         gnutls_x509_crt_set_expiration_time(*cert, 2147483647) != 0 ||
         gnutls_x509_crt_set_dn(*cert, "cn=mlvpn", NULL) != 0 ||
         gnutls_x509_crt_sign2(*cert, *cert, *key, GNUTLS_DIG_SHA256, 0) != 0) {
+        log_warnx("quic", "password certificate assembly failed");
         goto fail;
     }
     return 0;
