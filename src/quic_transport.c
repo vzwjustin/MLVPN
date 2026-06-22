@@ -619,7 +619,7 @@ quic_server_conn_init(struct mlvpn_quic_ctx *ctx, const ngtcp2_path *path,
     scid.datalen = 8;
     randombytes_buf(scid.data, scid.datalen);
 
-    rv = ngtcp2_conn_server_new(&ctx->conn, &scid, odcid, path, version,
+    rv = ngtcp2_conn_server_new(&ctx->conn, odcid, &scid, path, version,
                                 &callbacks, &settings, &params, NULL, ctx);
     if (rv != 0) {
         log_warnx("quic", "%s ngtcp2_conn_server_new failed: %s",
@@ -641,8 +641,9 @@ quic_server_accept(struct mlvpn_quic_ctx *ctx, const uint8_t *pkt, size_t pktlen
     int rv;
 
     rv = ngtcp2_pkt_decode_version_cid(&vc, pkt, pktlen, NGTCP2_MAX_CIDLEN);
-    if (rv != 0) {
-        log_debug("quic", "%s ignoring undecodable QUIC datagram", ctx->tun->name);
+    if (rv != 0 && rv != NGTCP2_ERR_VERSION_NEGOTIATION) {
+        log_debug("quic", "%s ignoring undecodable QUIC datagram: %s",
+                  ctx->tun->name, ngtcp2_strerror(rv));
         return -1;
     }
     if (vc.scid == NULL || vc.scidlen == 0) {
