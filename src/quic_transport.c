@@ -679,9 +679,14 @@ mlvpn_quic_create(struct mlvpn_tunnel_s *tun, int server_mode, int fd,
         goto fail;
     }
 
+    log_info("quic", "%s TLS initialized", tun->name);
+
     if (quic_conn_init(ctx) != 0) {
+        log_warnx("quic", "%s QUIC connection init failed", tun->name);
         goto fail;
     }
+
+    log_info("quic", "%s QUIC connection initialized", tun->name);
 
     if (mlvpn_quic_flush(ctx) < 0) {
         log_warnx("quic", "%s initial QUIC flush failed", tun->name);

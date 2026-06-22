@@ -1078,6 +1078,8 @@ mlvpn_rtun_start(mlvpn_tunnel_t *t)
         socklen_t remote_len = 0;
         const struct sockaddr *remote = NULL;
 
+        log_info("quic", "%s setting up QUIC transport", t->name);
+
         if (getsockname(fd, (struct sockaddr *)&local_addr, &local_len) != 0) {
             log_warn("quic", "%s getsockname failed", t->name);
             goto error;
