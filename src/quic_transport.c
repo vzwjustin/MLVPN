@@ -265,11 +265,43 @@ quic_scalar_from_seed(unsigned char scalar[32], const unsigned char seed[32])
 }
 
 static int
+quic_import_secp256r1_privkey(gnutls_x509_privkey_t key,
+                              const unsigned char scalar[32])
+{
+    unsigned char der[51];
+    gnutls_datum_t data;
+
+    der[0] = 0x30;
+    der[1] = 0x31;
+    der[2] = 0x02;
+    der[3] = 0x01;
+    der[4] = 0x01;
+    der[5] = 0x04;
+    der[6] = 0x20;
+    memcpy(der + 7, scalar, 32);
+    der[39] = 0xa0;
+    der[40] = 0x0a;
+    der[41] = 0x06;
+    der[42] = 0x08;
+    der[43] = 0x2a;
+    der[44] = 0x86;
+    der[45] = 0x48;
+    der[46] = 0xce;
+    der[47] = 0x3d;
+    der[48] = 0x03;
+    der[49] = 0x01;
+    der[50] = 0x07;
+
+    data.data = der;
+    data.size = sizeof(der);
+    return gnutls_x509_privkey_import(key, &data, GNUTLS_X509_FMT_DER);
+}
+
+static int
 quic_generate_password_cert(gnutls_x509_crt_t *cert,
                             gnutls_x509_privkey_t *key)
 {
     unsigned char seed[32], scalar[32];
-    gnutls_datum_t k;
 
     gnutls_x509_privkey_init(key);
     gnutls_x509_crt_init(cert);
@@ -289,10 +321,7 @@ quic_generate_password_cert(gnutls_x509_crt_t *cert,
         }
 
         quic_scalar_from_seed(scalar, seed);
-        k.data = scalar;
-        k.size = sizeof(scalar);
-        if (gnutls_x509_privkey_import_ecc_raw(*key, GNUTLS_ECC_CURVE_SECP256R1,
-                                               NULL, NULL, &k) == 0) {
+        if (quic_import_secp256r1_privkey(*key, scalar) == 0) {
             break;
         }
         if (attempt == 7) {
