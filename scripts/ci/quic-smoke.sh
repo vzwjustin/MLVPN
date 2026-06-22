@@ -61,9 +61,9 @@ EOF
 
 chmod 0600 "$WORKDIR/server.conf" "$WORKDIR/client.conf"
 
-sudo "$MLVPN" -c "$WORKDIR/server.conf" -u mlvpn >"$WORKDIR/server.log" 2>&1 &
+sudo stdbuf -oL "$MLVPN" -c "$WORKDIR/server.conf" -u mlvpn >"$WORKDIR/server.log" 2>&1 &
 
-for _ in $(seq 1 15); do
+for _ in $(seq 1 30); do
     if grep -q "QUIC transport enabled" "$WORKDIR/server.log"; then
         break
     fi
@@ -81,7 +81,7 @@ if ! grep -q "QUIC transport enabled" "$WORKDIR/server.log"; then
     exit 1
 fi
 
-sudo "$MLVPN" -c "$WORKDIR/client.conf" -u mlvpn >"$WORKDIR/client.log" 2>&1 &
+sudo stdbuf -oL "$MLVPN" -c "$WORKDIR/client.conf" -u mlvpn >"$WORKDIR/client.log" 2>&1 &
 
 for _ in $(seq 1 30); do
     if grep -q "QUIC session established" "$WORKDIR/client.log"; then

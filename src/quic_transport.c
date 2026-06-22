@@ -273,11 +273,24 @@ quic_generate_password_cert(gnutls_x509_crt_t *cert,
 
     k.data = seed;
     k.size = sizeof(seed);
-    if (gnutls_x509_privkey_import_ecc_raw(*key, GNUTLS_ECC_CURVE_SECP256R1,
-                                           NULL, NULL, &k) != 0) {
-        gnutls_x509_privkey_deinit(*key);
-        gnutls_x509_crt_deinit(*cert);
-        return -1;
+    for (unsigned int attempt = 0; attempt < 8; attempt++) {
+        if (gnutls_x509_privkey_import_ecc_raw(*key, GNUTLS_ECC_CURVE_SECP256R1,
+                                               NULL, NULL, &k) == 0) {
+            break;
+        }
+        if (attempt == 7) {
+            gnutls_x509_privkey_deinit(*key);
+            gnutls_x509_crt_deinit(*cert);
+            return -1;
+        }
+        if (crypto_generichash(seed, sizeof(seed), seed, sizeof(seed),
+                               (unsigned char *)"retry", 5) != 0) {
+            gnutls_x509_privkey_deinit(*key);
+            gnutls_x509_crt_deinit(*cert);
+            return -1;
+        }
+        k.data = seed;
+        k.size = sizeof(seed);
     }
     gnutls_x509_privkey_fix(*key);
 
