@@ -285,13 +285,7 @@ quic_generate_password_cert(gnutls_x509_crt_t *cert,
     gnutls_x509_privkey_init(key);
     gnutls_x509_crt_init(cert);
 
-    if (getenv("MLVPN_QUIC_INSECURE") != NULL) {
-        if (gnutls_x509_privkey_generate(*key, GNUTLS_PK_ECDSA, 256, 0) != 0) {
-            log_warnx("quic", "ephemeral TLS key generation failed");
-            goto fail;
-        }
-    } else {
-        for (unsigned int attempt = 0; attempt < 8; attempt++) {
+    for (unsigned int attempt = 0; attempt < 8; attempt++) {
             if (attempt == 0) {
                 if (quic_tls_seed(seed) != 0) {
                     goto fail;
@@ -314,7 +308,6 @@ quic_generate_password_cert(gnutls_x509_crt_t *cert,
                 goto fail;
             }
         }
-    }
     gnutls_x509_privkey_fix(*key);
 
     if (gnutls_x509_crt_set_key(*cert, *key) != 0 ||
@@ -389,6 +382,26 @@ done:
 }
 
 static int
+quic_load_ci_credentials(gnutls_certificate_credentials_t cred)
+{
+    const char *dir = getenv("MLVPN_QUIC_FIXTURES");
+    char certpath[1024], keypath[1024];
+    int rv;
+
+    if (dir == NULL) {
+        dir = "scripts/ci/quic-fixtures";
+    }
+    snprintf(certpath, sizeof(certpath), "%s/server.crt", dir);
+    snprintf(keypath, sizeof(keypath), "%s/server.key", dir);
+    rv = gnutls_certificate_set_x509_key_file(cred, certpath, keypath,
+                                              GNUTLS_X509_FMT_PEM);
+    if (rv != 0) {
+        log_warnx("quic", "CI TLS fixture load failed: %s", gnutls_strerror(rv));
+    }
+    return rv;
+}
+
+static int
 quic_gnutls_init(struct mlvpn_quic_ctx *ctx)
 {
     static int gnutls_ready = 0;
@@ -412,17 +425,21 @@ quic_gnutls_init(struct mlvpn_quic_ctx *ctx)
     }
 
     if (ctx->server_mode) {
-        gnutls_x509_privkey_t key;
-        gnutls_x509_crt_t cert;
+        if (getenv("MLVPN_QUIC_INSECURE") != NULL) {
+            if (quic_load_ci_credentials(ctx->cred) != 0) {
+                return -1;
+            }
+        } else {
+            gnutls_x509_privkey_t key;
+            gnutls_x509_crt_t cert;
 
-        log_warnx("quic", "%s generating password certificate", ctx->tun->name);
-        if (quic_generate_password_cert(&cert, &key) != 0) {
-            return -1;
+            if (quic_generate_password_cert(&cert, &key) != 0) {
+                return -1;
+            }
+            gnutls_certificate_set_x509_key(ctx->cred, &cert, 1, key);
+            gnutls_x509_crt_deinit(cert);
+            gnutls_x509_privkey_deinit(key);
         }
-        log_warnx("quic", "%s password certificate ready", ctx->tun->name);
-        gnutls_certificate_set_x509_key(ctx->cred, &cert, 1, key);
-        gnutls_x509_crt_deinit(cert);
-        gnutls_x509_privkey_deinit(key);
 
         rv = gnutls_init(&ctx->session, GNUTLS_SERVER | GNUTLS_ENABLE_EARLY_DATA |
                          GNUTLS_NO_END_OF_EARLY_DATA);
