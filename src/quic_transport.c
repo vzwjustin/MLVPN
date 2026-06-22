@@ -287,6 +287,7 @@ quic_generate_password_cert(gnutls_x509_crt_t *cert,
 
     if (getenv("MLVPN_QUIC_INSECURE") != NULL) {
         if (gnutls_x509_privkey_generate(*key, GNUTLS_PK_ECDSA, 256, 0) != 0) {
+            log_warnx("quic", "ephemeral TLS key generation failed");
             goto fail;
         }
     } else {
