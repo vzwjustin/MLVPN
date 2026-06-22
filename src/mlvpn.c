@@ -436,15 +436,19 @@ mlvpn_rtun_read(EV_P_ ev_io *w, int revents)
 
         len = recvmsg(tun->fd, &msg, MSG_DONTWAIT);
         if (len < 0) {
-            if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                log_warn("quic", "%s read error", tun->name);
-                mlvpn_rtun_status_down(tun);
+            if (errno == EAGAIN || errno == EWOULDBLOCK ||
+                errno == ECONNREFUSED) {
+                return;
             }
+            log_warn("quic", "%s read error", tun->name);
+            mlvpn_rtun_status_down(tun);
             return;
         }
         if (len == 0) {
             return;
         }
+
+        log_debug("quic", "%s received %zd UDP bytes", tun->name, len);
 
         if (mlvpn_quic_input(tun->quic, buf, (size_t)len,
                              (struct sockaddr *)&clientaddr, msg.msg_namelen) < 0) {
@@ -1078,10 +1082,13 @@ mlvpn_rtun_start(mlvpn_tunnel_t *t)
         socklen_t remote_len = 0;
         const struct sockaddr *remote = NULL;
 
+        log_info("quic", "%s setting up QUIC transport", t->name);
+
         if (getsockname(fd, (struct sockaddr *)&local_addr, &local_len) != 0) {
             log_warn("quic", "%s getsockname failed", t->name);
             goto error;
         }
+        log_warnx("quic", "%s local address ready", t->name);
 
         if (!t->server_mode && t->addrinfo != NULL) {
             if (t->addrinfo->ai_addrlen > sizeof(remote_addr)) {
@@ -1114,6 +1121,11 @@ mlvpn_rtun_start(mlvpn_tunnel_t *t)
         }
         ev_timer_start(EV_A_ &t->quic_timer);
         log_info("quic", "%s QUIC transport enabled", t->name);
+        if (!t->server_mode || mlvpn_quic_needs_flush(t->quic)) {
+            if (!ev_is_active(&t->io_write)) {
+                ev_io_start(EV_A_ &t->io_write);
+            }
+        }
     }
 #endif
 
@@ -1816,6 +1828,11 @@ main(int argc, char **argv)
     mlvpn_tuntap_init();
     if (mlvpn_config(config_fd, 1) != 0)
         fatalx("cannot open config file");
+
+#ifdef HAVE_QUIC
+    if (mlvpn_options.use_quic && mlvpn_quic_global_init() != 0)
+        fatal(NULL, "GnuTLS initialization failed");
+#endif
 
     if (mlvpn_tuntap_alloc(&tuntap) <= 0)
         fatalx("cannot create tunnel device");

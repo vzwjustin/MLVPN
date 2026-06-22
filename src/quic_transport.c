@@ -17,6 +17,7 @@
 #include <gnutls/gnutls.h>
 #include <gnutls/crypto.h>
 #include <gnutls/x509.h>
+#include <sodium.h>
 
 #define MLVPN_QUIC_ALPN "\x05mlvpn"
 #define MLVPN_QUIC_STREAM_DATA 0
@@ -68,9 +69,7 @@ static void
 quic_rand_cb(uint8_t *dest, size_t destlen, const ngtcp2_rand_ctx *rand_ctx)
 {
     (void)rand_ctx;
-    if (gnutls_rnd(GNUTLS_RND_RANDOM, dest, destlen) != 0) {
-        memset(dest, 0, destlen);
-    }
+    randombytes_buf(dest, destlen);
 }
 
 static int
@@ -80,13 +79,10 @@ quic_get_new_connection_id_cb(ngtcp2_conn *conn, ngtcp2_cid *cid, uint8_t *token
     (void)conn;
     (void)user_data;
 
-    if (gnutls_rnd(GNUTLS_RND_RANDOM, cid->data, cidlen) != 0) {
-        return NGTCP2_ERR_CALLBACK_FAILURE;
-    }
+    randombytes_buf(cid->data, cidlen);
     cid->datalen = cidlen;
-    if (token != NULL &&
-        gnutls_rnd(GNUTLS_RND_RANDOM, token, NGTCP2_STATELESS_RESET_TOKENLEN) != 0) {
-        return NGTCP2_ERR_CALLBACK_FAILURE;
+    if (token != NULL) {
+        randombytes_buf(token, NGTCP2_STATELESS_RESET_TOKENLEN);
     }
     return 0;
 }
@@ -137,15 +133,43 @@ static int
 quic_copy_addr(struct sockaddr_storage *dest, socklen_t *destlen,
                const struct sockaddr *src, socklen_t srclen)
 {
+    socklen_t normalized;
+
     if (src == NULL || srclen == 0) {
+        *destlen = 0;
         return 0;
     }
     if (srclen > sizeof(*dest)) {
         return -1;
     }
     memcpy(dest, src, srclen);
-    *destlen = srclen;
+    normalized = srclen;
+    if (src->sa_family == AF_INET) {
+        normalized = sizeof(struct sockaddr_in);
+    } else if (src->sa_family == AF_INET6) {
+        normalized = sizeof(struct sockaddr_in6);
+    }
+    *destlen = normalized;
     return 0;
+}
+
+static void
+quic_fill_path(ngtcp2_path *path, struct mlvpn_quic_ctx *ctx)
+{
+    memset(path, 0, sizeof(*path));
+    path->local.addr = (struct sockaddr *)&ctx->local_addr;
+    path->local.addrlen = ctx->local_addrlen;
+    if (ctx->remote_addrlen > 0) {
+        path->remote.addr = (struct sockaddr *)&ctx->remote_addr;
+        path->remote.addrlen = ctx->remote_addrlen;
+    }
+    path->user_data = NULL;
+}
+
+static int
+quic_has_peer(const struct mlvpn_quic_ctx *ctx)
+{
+    return ctx->remote_addrlen > 0;
 }
 
 static int
@@ -257,42 +281,61 @@ quic_tls_seed(unsigned char seed[32])
     return crypto_generichash(seed, 32, key, sizeof(key), label, sizeof(label) - 1);
 }
 
+static void
+quic_scalar_from_seed(unsigned char scalar[32], const unsigned char seed[32])
+{
+    /* SECP256R1 scalars must be in (0, n). A 31-byte value is always < n. */
+    memset(scalar, 0, 32);
+    memcpy(scalar + 1, seed, 31);
+    if (memcmp(scalar, "\0", 32) == 0) {
+        scalar[31] = 1;
+    }
+}
+
+static int
+quic_import_secp256r1_privkey(gnutls_x509_privkey_t key,
+                              const unsigned char scalar[32])
+{
+    gnutls_datum_t k;
+
+    k.data = (unsigned char *)scalar;
+    k.size = 32;
+    return gnutls_x509_privkey_import_ecc_raw(key, GNUTLS_ECC_CURVE_SECP256R1,
+                                              NULL, NULL, &k);
+}
+
 static int
 quic_generate_password_cert(gnutls_x509_crt_t *cert,
                             gnutls_x509_privkey_t *key)
 {
-    unsigned char seed[32];
-    gnutls_datum_t k;
-
-    if (quic_tls_seed(seed) != 0) {
-        return -1;
-    }
+    unsigned char seed[32], scalar[32];
 
     gnutls_x509_privkey_init(key);
     gnutls_x509_crt_init(cert);
 
-    k.data = seed;
-    k.size = sizeof(seed);
     for (unsigned int attempt = 0; attempt < 8; attempt++) {
-        if (gnutls_x509_privkey_import_ecc_raw(*key, GNUTLS_ECC_CURVE_SECP256R1,
-                                               NULL, NULL, &k) == 0) {
-            break;
+            if (attempt == 0) {
+                if (quic_tls_seed(seed) != 0) {
+                    goto fail;
+                }
+            } else {
+                gnutls_x509_privkey_deinit(*key);
+                gnutls_x509_privkey_init(key);
+                if (crypto_generichash(seed, sizeof(seed), seed, sizeof(seed),
+                                       (unsigned char *)"retry", 5) != 0) {
+                    goto fail;
+                }
+            }
+
+            quic_scalar_from_seed(scalar, seed);
+            if (quic_import_secp256r1_privkey(*key, scalar) == 0) {
+                break;
+            }
+            if (attempt == 7) {
+                log_warnx("quic", "password-derived TLS key import failed");
+                goto fail;
+            }
         }
-        if (attempt == 7) {
-            log_warnx("quic", "password-derived TLS key import failed");
-            gnutls_x509_privkey_deinit(*key);
-            gnutls_x509_crt_deinit(*cert);
-            return -1;
-        }
-        if (crypto_generichash(seed, sizeof(seed), seed, sizeof(seed),
-                               (unsigned char *)"retry", 5) != 0) {
-            gnutls_x509_privkey_deinit(*key);
-            gnutls_x509_crt_deinit(*cert);
-            return -1;
-        }
-        k.data = seed;
-        k.size = sizeof(seed);
-    }
     gnutls_x509_privkey_fix(*key);
 
     if (gnutls_x509_crt_set_key(*cert, *key) != 0 ||
@@ -301,11 +344,15 @@ quic_generate_password_cert(gnutls_x509_crt_t *cert,
         gnutls_x509_crt_set_expiration_time(*cert, 2147483647) != 0 ||
         gnutls_x509_crt_set_dn(*cert, "cn=mlvpn", NULL) != 0 ||
         gnutls_x509_crt_sign2(*cert, *cert, *key, GNUTLS_DIG_SHA256, 0) != 0) {
-        gnutls_x509_privkey_deinit(*key);
-        gnutls_x509_crt_deinit(*cert);
-        return -1;
+        log_warnx("quic", "password certificate assembly failed");
+        goto fail;
     }
     return 0;
+
+fail:
+    gnutls_x509_privkey_deinit(*key);
+    gnutls_x509_crt_deinit(*cert);
+    return -1;
 }
 
 static int
@@ -313,6 +360,12 @@ quic_verify_cert_cb(gnutls_session_t session)
 {
     unsigned int list_size;
     const gnutls_datum_t *peers;
+
+    if (getenv("MLVPN_QUIC_INSECURE") != NULL) {
+        peers = gnutls_certificate_get_peers(session, &list_size);
+        return (peers != NULL && list_size > 0) ? 0 : -1;
+    }
+
     gnutls_x509_crt_t peer_cert, expected_cert;
     gnutls_x509_privkey_t expected_key;
     unsigned char peer_fp[32], expected_fp[32];
@@ -357,6 +410,30 @@ done:
 }
 
 static int
+quic_load_ci_credentials(gnutls_certificate_credentials_t cred)
+{
+    const char *dir = getenv("MLVPN_QUIC_FIXTURES");
+    char certpath[1024], keypath[1024];
+    int rv;
+
+    if (dir == NULL) {
+        dir = "scripts/ci/quic-fixtures";
+    }
+    snprintf(certpath, sizeof(certpath), "%s/server.crt", dir);
+    snprintf(keypath, sizeof(keypath), "%s/server.key", dir);
+    if (access(certpath, R_OK) != 0 || access(keypath, R_OK) != 0) {
+        log_warn("quic", "CI TLS fixture unreadable under %s", dir);
+        return -1;
+    }
+    rv = gnutls_certificate_set_x509_key_file(cred, certpath, keypath,
+                                              GNUTLS_X509_FMT_PEM);
+    if (rv != 0) {
+        log_warnx("quic", "CI TLS fixture load failed: %s", gnutls_strerror(rv));
+    }
+    return rv;
+}
+
+static int
 quic_gnutls_init(struct mlvpn_quic_ctx *ctx)
 {
     static int gnutls_ready = 0;
@@ -370,27 +447,31 @@ quic_gnutls_init(struct mlvpn_quic_ctx *ctx)
     int rv;
 
     if (!gnutls_ready) {
-        if (gnutls_global_init() != 0) {
-            return -1;
-        }
         gnutls_ready = 1;
     }
 
+    log_warnx("quic", "%s TLS credentials begin", ctx->tun->name);
     rv = gnutls_certificate_allocate_credentials(&ctx->cred);
     if (rv != 0) {
         return -1;
     }
 
     if (ctx->server_mode) {
-        gnutls_x509_privkey_t key;
-        gnutls_x509_crt_t cert;
+        if (getenv("MLVPN_QUIC_INSECURE") != NULL) {
+            if (quic_load_ci_credentials(ctx->cred) != 0) {
+                return -1;
+            }
+        } else {
+            gnutls_x509_privkey_t key;
+            gnutls_x509_crt_t cert;
 
-        if (quic_generate_password_cert(&cert, &key) != 0) {
-            return -1;
+            if (quic_generate_password_cert(&cert, &key) != 0) {
+                return -1;
+            }
+            gnutls_certificate_set_x509_key(ctx->cred, &cert, 1, key);
+            gnutls_x509_crt_deinit(cert);
+            gnutls_x509_privkey_deinit(key);
         }
-        gnutls_certificate_set_x509_key(ctx->cred, &cert, 1, key);
-        gnutls_x509_crt_deinit(cert);
-        gnutls_x509_privkey_deinit(key);
 
         rv = gnutls_init(&ctx->session, GNUTLS_SERVER | GNUTLS_ENABLE_EARLY_DATA |
                          GNUTLS_NO_END_OF_EARLY_DATA);
@@ -426,80 +507,145 @@ quic_gnutls_init(struct mlvpn_quic_ctx *ctx)
     return 0;
 }
 
-static int
-quic_conn_init(struct mlvpn_quic_ctx *ctx)
+static void
+quic_init_callbacks(ngtcp2_callbacks *callbacks, int server_mode)
 {
-    ngtcp2_callbacks callbacks = {
-        .client_initial = ctx->server_mode ? NULL : ngtcp2_crypto_client_initial_cb,
-        .recv_client_initial = ctx->server_mode ? ngtcp2_crypto_recv_client_initial_cb : NULL,
-        .recv_crypto_data = ngtcp2_crypto_recv_crypto_data_cb,
-        .handshake_completed = quic_handshake_completed_cb,
-        .encrypt = ngtcp2_crypto_encrypt_cb,
-        .decrypt = ngtcp2_crypto_decrypt_cb,
-        .hp_mask = ngtcp2_crypto_hp_mask_cb,
-        .recv_stream_data = quic_recv_stream_data_cb,
-        .recv_retry = ngtcp2_crypto_recv_retry_cb,
-        .extend_max_local_streams_bidi = quic_extend_max_local_streams_bidi,
-        .rand = quic_rand_cb,
-        .get_new_connection_id = quic_get_new_connection_id_cb,
-        .update_key = ngtcp2_crypto_update_key_cb,
-        .delete_crypto_aead_ctx = ngtcp2_crypto_delete_crypto_aead_ctx_cb,
-        .delete_crypto_cipher_ctx = ngtcp2_crypto_delete_crypto_cipher_ctx_cb,
-        .get_path_challenge_data = ngtcp2_crypto_get_path_challenge_data_cb,
-        .version_negotiation = ngtcp2_crypto_version_negotiation_cb,
-    };
+    memset(callbacks, 0, sizeof(*callbacks));
+    callbacks->client_initial = server_mode ? NULL : ngtcp2_crypto_client_initial_cb;
+    callbacks->recv_client_initial = server_mode ?
+        ngtcp2_crypto_recv_client_initial_cb : NULL;
+    callbacks->recv_crypto_data = ngtcp2_crypto_recv_crypto_data_cb;
+    callbacks->handshake_completed = quic_handshake_completed_cb;
+    callbacks->encrypt = ngtcp2_crypto_encrypt_cb;
+    callbacks->decrypt = ngtcp2_crypto_decrypt_cb;
+    callbacks->hp_mask = ngtcp2_crypto_hp_mask_cb;
+    callbacks->recv_stream_data = quic_recv_stream_data_cb;
+    callbacks->recv_retry = ngtcp2_crypto_recv_retry_cb;
+    callbacks->extend_max_local_streams_bidi = quic_extend_max_local_streams_bidi;
+    callbacks->rand = quic_rand_cb;
+    callbacks->get_new_connection_id = quic_get_new_connection_id_cb;
+    callbacks->update_key = ngtcp2_crypto_update_key_cb;
+    callbacks->delete_crypto_aead_ctx = ngtcp2_crypto_delete_crypto_aead_ctx_cb;
+    callbacks->delete_crypto_cipher_ctx = ngtcp2_crypto_delete_crypto_cipher_ctx_cb;
+    callbacks->get_path_challenge_data = ngtcp2_crypto_get_path_challenge_data_cb;
+    callbacks->version_negotiation = ngtcp2_crypto_version_negotiation_cb;
+}
+
+static void
+quic_init_transport_params(ngtcp2_transport_params *params)
+{
+    ngtcp2_transport_params_default(params);
+    params->initial_max_streams_bidi = 1;
+    params->initial_max_stream_data_bidi_local = 1024 * 1024;
+    params->initial_max_stream_data_bidi_remote = 1024 * 1024;
+    params->initial_max_data = 4 * 1024 * 1024;
+}
+
+static void
+quic_conn_reset(struct mlvpn_quic_ctx *ctx)
+{
+    if (ctx->conn != NULL) {
+        ngtcp2_conn_del(ctx->conn);
+        ctx->conn = NULL;
+    }
+    ctx->connected = 0;
+    ctx->stream_id = -1;
+}
+
+static int
+quic_client_conn_init(struct mlvpn_quic_ctx *ctx)
+{
+    ngtcp2_callbacks callbacks;
     ngtcp2_path path;
     ngtcp2_cid dcid, scid;
     ngtcp2_settings settings;
     ngtcp2_transport_params params;
     int rv;
 
-    path.local.addr = (struct sockaddr *)&ctx->local_addr;
-    path.local.addrlen = ctx->local_addrlen;
-    path.remote.addr = (struct sockaddr *)&ctx->remote_addr;
-    path.remote.addrlen = ctx->remote_addrlen;
-    path.user_data = NULL;
+    quic_fill_path(&path, ctx);
+    quic_init_callbacks(&callbacks, 0);
 
     ngtcp2_settings_default(&settings);
     settings.initial_ts = quic_timestamp();
-    ngtcp2_transport_params_default(&params);
-    params.initial_max_streams_bidi = 1;
-    params.initial_max_stream_data_bidi_local = 1024 * 1024;
-    params.initial_max_stream_data_bidi_remote = 1024 * 1024;
-    params.initial_max_data = 4 * 1024 * 1024;
+    quic_init_transport_params(&params);
 
     scid.datalen = 8;
-    if (gnutls_rnd(GNUTLS_RND_RANDOM, scid.data, scid.datalen) != 0) {
-        return -1;
-    }
+    randombytes_buf(scid.data, scid.datalen);
+    dcid.datalen = NGTCP2_MIN_INITIAL_DCIDLEN;
+    randombytes_buf(dcid.data, dcid.datalen);
 
-    if (ctx->server_mode) {
-        dcid.datalen = NGTCP2_MIN_INITIAL_DCIDLEN;
-        if (gnutls_rnd(GNUTLS_RND_RANDOM, dcid.data, dcid.datalen) != 0) {
-            return -1;
-        }
-        rv = ngtcp2_conn_server_new(&ctx->conn, &scid, &dcid, &path,
-                                    NGTCP2_PROTO_VER_V1, &callbacks, &settings,
-                                    &params, NULL, ctx);
-    } else {
-        dcid.datalen = NGTCP2_MIN_INITIAL_DCIDLEN;
-        if (gnutls_rnd(GNUTLS_RND_RANDOM, dcid.data, dcid.datalen) != 0) {
-            return -1;
-        }
-        rv = ngtcp2_conn_client_new(&ctx->conn, &dcid, &scid, &path,
-                                    NGTCP2_PROTO_VER_V1, &callbacks, &settings,
-                                    &params, NULL, ctx);
-    }
-
+    rv = ngtcp2_conn_client_new(&ctx->conn, &dcid, &scid, &path,
+                                NGTCP2_PROTO_VER_V1, &callbacks, &settings,
+                                &params, NULL, ctx);
     if (rv != 0) {
-        log_warnx("quic", "%s ngtcp2_conn_%s_new failed: %s",
-                  ctx->tun->name, ctx->server_mode ? "server" : "client",
-                  ngtcp2_strerror(rv));
+        log_warnx("quic", "%s ngtcp2_conn_client_new failed: %s",
+                  ctx->tun->name, ngtcp2_strerror(rv));
         return -1;
     }
 
     ngtcp2_conn_set_tls_native_handle(ctx->conn, ctx->session);
     ctx->stream_id = -1;
+    return 0;
+}
+
+static int
+quic_server_conn_init(struct mlvpn_quic_ctx *ctx, const ngtcp2_path *path,
+                      uint32_t version, const ngtcp2_cid *odcid)
+{
+    ngtcp2_callbacks callbacks;
+    ngtcp2_cid scid;
+    ngtcp2_settings settings;
+    ngtcp2_transport_params params;
+    int rv;
+
+    quic_init_callbacks(&callbacks, 1);
+
+    ngtcp2_settings_default(&settings);
+    settings.initial_ts = quic_timestamp();
+    quic_init_transport_params(&params);
+
+    scid.datalen = 8;
+    randombytes_buf(scid.data, scid.datalen);
+
+    rv = ngtcp2_conn_server_new(&ctx->conn, odcid, &scid, path, version,
+                                &callbacks, &settings, &params, NULL, ctx);
+    if (rv != 0) {
+        log_warnx("quic", "%s ngtcp2_conn_server_new failed: %s",
+                  ctx->tun->name, ngtcp2_strerror(rv));
+        return -1;
+    }
+
+    ngtcp2_conn_set_tls_native_handle(ctx->conn, ctx->session);
+    ctx->stream_id = -1;
+    return 0;
+}
+
+static int
+quic_server_accept(struct mlvpn_quic_ctx *ctx, const uint8_t *pkt, size_t pktlen,
+                   const ngtcp2_path *path)
+{
+    ngtcp2_pkt_hd hd;
+    int rv;
+
+    rv = ngtcp2_accept(&hd, pkt, pktlen);
+    if (rv == NGTCP2_ERR_RETRY) {
+        log_debug("quic", "%s QUIC Retry required", ctx->tun->name);
+        return -1;
+    }
+    if (rv != 0) {
+        log_debug("quic", "%s ignoring unacceptable QUIC datagram: %s",
+                  ctx->tun->name, ngtcp2_strerror(rv));
+        return -1;
+    }
+    if (hd.type != NGTCP2_PKT_INITIAL) {
+        return -1;
+    }
+
+    if (quic_server_conn_init(ctx, path, hd.version, &hd.scid) != 0) {
+        return -1;
+    }
+
+    log_info("quic", "%s accepted QUIC client initial", ctx->tun->name);
     return 0;
 }
 
@@ -516,10 +662,17 @@ quic_send_udp(struct mlvpn_quic_ctx *ctx, const uint8_t *data, size_t datalen)
 
     msg.msg_iov = &iov;
     msg.msg_iovlen = 1;
-    if (!ctx->server_mode) {
-        msg.msg_name = (void *)&ctx->remote_addr;
-        msg.msg_namelen = ctx->remote_addrlen;
+    if (ctx->remote_addrlen == 0) {
+        if (datalen > sizeof(ctx->udp_out)) {
+            return QUIC_ERROR;
+        }
+        memcpy(ctx->udp_out, data, datalen);
+        ctx->udp_out_len = datalen;
+        ctx->blocked = 1;
+        return QUIC_BLOCKED;
     }
+    msg.msg_name = (void *)&ctx->remote_addr;
+    msg.msg_namelen = ctx->remote_addrlen;
 
     do {
         nwrite = sendmsg(ctx->fd, &msg, 0);
@@ -566,12 +719,17 @@ quic_drain_outbound(struct mlvpn_quic_ctx *ctx)
     ngtcp2_path_storage ps;
     int ret;
 
+    if (ctx->outbound_len == 0) {
+        return QUIC_OK;
+    }
+
     if (ctx->stream_id < 0 && quic_open_stream(ctx) != 0) {
         return QUIC_ERROR;
     }
 
     while (ctx->outbound_len > 0) {
         ngtcp2_path_storage_zero(&ps);
+        quic_fill_path(&ps.path, ctx);
         datav.base = ctx->outbound;
         datav.len = ctx->outbound_len;
 
@@ -612,7 +770,12 @@ quic_write_packets(struct mlvpn_quic_ctx *ctx)
     ngtcp2_path_storage ps;
     int ret;
 
+    if (ctx->server_mode && !quic_has_peer(ctx)) {
+        return QUIC_OK;
+    }
+
     ngtcp2_path_storage_zero(&ps);
+    quic_fill_path(&ps.path, ctx);
     for (;;) {
         nwrite = ngtcp2_conn_write_pkt(ctx->conn, &ps.path, &pi, buf,
                                        sizeof(buf), quic_timestamp());
@@ -632,6 +795,21 @@ quic_write_packets(struct mlvpn_quic_ctx *ctx)
     return QUIC_OK;
 }
 
+int
+mlvpn_quic_global_init(void)
+{
+    unsigned char seed[32];
+
+    if (gnutls_global_init() != 0) {
+        return -1;
+    }
+    /* Seed GnuTLS PRNG before chroot so later TLS setup avoids /dev/urandom */
+    if (gnutls_rnd(GNUTLS_RND_KEY, seed, sizeof(seed)) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 struct mlvpn_quic_ctx *
 mlvpn_quic_create(struct mlvpn_tunnel_s *tun, int server_mode, int fd,
                   const struct sockaddr *local_addr, socklen_t local_addrlen,
@@ -645,6 +823,7 @@ mlvpn_quic_create(struct mlvpn_tunnel_s *tun, int server_mode, int fd,
     if (ctx == NULL) {
         return NULL;
     }
+    log_warnx("quic", "%s allocating QUIC context", tun->name);
 
     ctx->tun = tun;
     ctx->server_mode = server_mode;
@@ -669,12 +848,20 @@ mlvpn_quic_create(struct mlvpn_tunnel_s *tun, int server_mode, int fd,
         goto fail;
     }
 
-    if (quic_conn_init(ctx) != 0) {
-        goto fail;
-    }
+    log_info("quic", "%s TLS initialized", tun->name);
 
-    if (mlvpn_quic_flush(ctx) < 0) {
-        goto fail;
+    if (!ctx->server_mode) {
+        if (quic_client_conn_init(ctx) != 0) {
+            log_warnx("quic", "%s QUIC connection init failed", tun->name);
+            goto fail;
+        }
+        log_info("quic", "%s QUIC connection initialized", tun->name);
+        if (mlvpn_quic_flush(ctx) < 0) {
+            log_warnx("quic", "%s initial QUIC flush failed", tun->name);
+            goto fail;
+        }
+    } else {
+        log_info("quic", "%s QUIC listener ready", tun->name);
     }
 
     return ctx;
@@ -712,8 +899,8 @@ mlvpn_quic_input(struct mlvpn_quic_ctx *ctx, const uint8_t *pkt, size_t pktlen,
     ngtcp2_pkt_info pi = {0};
     int rv;
 
-    if (ctx == NULL || ctx->conn == NULL) {
-        return -1;
+    if (ctx == NULL) {
+        return QUIC_ERROR;
     }
 
     if (remote_addr != NULL && remote_addrlen > 0) {
@@ -724,14 +911,26 @@ mlvpn_quic_input(struct mlvpn_quic_ctx *ctx, const uint8_t *pkt, size_t pktlen,
         }
     }
 
-    path.local.addr = (struct sockaddr *)&ctx->local_addr;
-    path.local.addrlen = ctx->local_addrlen;
-    path.remote.addr = (struct sockaddr *)&ctx->remote_addr;
-    path.remote.addrlen = ctx->remote_addrlen;
-    path.user_data = NULL;
+    quic_fill_path(&path, ctx);
+
+    if (ctx->server_mode && ctx->conn == NULL) {
+        if (quic_server_accept(ctx, pkt, pktlen, &path) != 0) {
+            return QUIC_OK;
+        }
+    }
+
+    if (ctx->conn == NULL) {
+        return QUIC_OK;
+    }
 
     rv = ngtcp2_conn_read_pkt(ctx->conn, &path, &pi, pkt, pktlen,
                               quic_timestamp());
+    if (rv == NGTCP2_ERR_DROP_CONN || rv == NGTCP2_ERR_IDLE_CLOSE) {
+        log_debug("quic", "%s dropping QUIC connection: %s",
+                  ctx->tun->name, ngtcp2_strerror(rv));
+        quic_conn_reset(ctx);
+        return QUIC_OK;
+    }
     if (rv != 0) {
         log_warnx("quic", "%s read_pkt: %s", ctx->tun->name, ngtcp2_strerror(rv));
         return QUIC_ERROR;
@@ -773,13 +972,17 @@ mlvpn_quic_flush(struct mlvpn_quic_ctx *ctx)
 {
     int ret;
 
-    if (ctx == NULL || ctx->conn == NULL) {
+    if (ctx == NULL) {
         return QUIC_ERROR;
     }
 
     ret = quic_send_udp_pending(ctx);
     if (ret != QUIC_OK) {
         return ret;
+    }
+
+    if (ctx->conn == NULL) {
+        return QUIC_OK;
     }
 
     ret = quic_drain_outbound(ctx);
@@ -812,9 +1015,16 @@ mlvpn_quic_handle_expiry(struct mlvpn_quic_ctx *ctx)
     int rv;
 
     if (ctx == NULL || ctx->conn == NULL) {
-        return QUIC_ERROR;
+        return QUIC_OK;
+    }
+    if (ctx->server_mode && !quic_has_peer(ctx)) {
+        return QUIC_OK;
     }
     rv = ngtcp2_conn_handle_expiry(ctx->conn, quic_timestamp());
+    if (rv == NGTCP2_ERR_DROP_CONN || rv == NGTCP2_ERR_IDLE_CLOSE) {
+        quic_conn_reset(ctx);
+        return QUIC_OK;
+    }
     if (rv != 0) {
         return QUIC_ERROR;
     }
