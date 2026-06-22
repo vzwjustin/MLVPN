@@ -17,6 +17,7 @@
 #include <gnutls/gnutls.h>
 #include <gnutls/crypto.h>
 #include <gnutls/x509.h>
+#include <sodium.h>
 
 #define MLVPN_QUIC_ALPN "\x05mlvpn"
 #define MLVPN_QUIC_STREAM_DATA 0
@@ -68,9 +69,7 @@ static void
 quic_rand_cb(uint8_t *dest, size_t destlen, const ngtcp2_rand_ctx *rand_ctx)
 {
     (void)rand_ctx;
-    if (gnutls_rnd(GNUTLS_RND_RANDOM, dest, destlen) != 0) {
-        memset(dest, 0, destlen);
-    }
+    randombytes_buf(dest, destlen);
 }
 
 static int
@@ -80,13 +79,10 @@ quic_get_new_connection_id_cb(ngtcp2_conn *conn, ngtcp2_cid *cid, uint8_t *token
     (void)conn;
     (void)user_data;
 
-    if (gnutls_rnd(GNUTLS_RND_RANDOM, cid->data, cidlen) != 0) {
-        return NGTCP2_ERR_CALLBACK_FAILURE;
-    }
+    randombytes_buf(cid->data, cidlen);
     cid->datalen = cidlen;
-    if (token != NULL &&
-        gnutls_rnd(GNUTLS_RND_RANDOM, token, NGTCP2_STATELESS_RESET_TOKENLEN) != 0) {
-        return NGTCP2_ERR_CALLBACK_FAILURE;
+    if (token != NULL) {
+        randombytes_buf(token, NGTCP2_STATELESS_RESET_TOKENLEN);
     }
     return 0;
 }
@@ -469,26 +465,17 @@ quic_conn_init(struct mlvpn_quic_ctx *ctx)
     params.initial_max_data = 4 * 1024 * 1024;
 
     scid.datalen = 8;
-    if (gnutls_rnd(GNUTLS_RND_RANDOM, scid.data, scid.datalen) != 0) {
-        log_warnx("quic", "%s SCID random generation failed", ctx->tun->name);
-        return -1;
-    }
+    randombytes_buf(scid.data, scid.datalen);
 
     if (ctx->server_mode) {
         dcid.datalen = NGTCP2_MIN_INITIAL_DCIDLEN;
-        if (gnutls_rnd(GNUTLS_RND_RANDOM, dcid.data, dcid.datalen) != 0) {
-            log_warnx("quic", "%s DCID random generation failed", ctx->tun->name);
-            return -1;
-        }
+        randombytes_buf(dcid.data, dcid.datalen);
         rv = ngtcp2_conn_server_new(&ctx->conn, &scid, &dcid, &path,
                                     NGTCP2_PROTO_VER_V1, &callbacks, &settings,
                                     &params, NULL, ctx);
     } else {
         dcid.datalen = NGTCP2_MIN_INITIAL_DCIDLEN;
-        if (gnutls_rnd(GNUTLS_RND_RANDOM, dcid.data, dcid.datalen) != 0) {
-            log_warnx("quic", "%s DCID random generation failed", ctx->tun->name);
-            return -1;
-        }
+        randombytes_buf(dcid.data, dcid.datalen);
         rv = ngtcp2_conn_client_new(&ctx->conn, &dcid, &scid, &path,
                                     NGTCP2_PROTO_VER_V1, &callbacks, &settings,
                                     &params, NULL, ctx);
@@ -645,7 +632,16 @@ quic_write_packets(struct mlvpn_quic_ctx *ctx)
 int
 mlvpn_quic_global_init(void)
 {
-    return gnutls_global_init();
+    unsigned char seed[32];
+
+    if (gnutls_global_init() != 0) {
+        return -1;
+    }
+    /* Seed GnuTLS PRNG before chroot so later TLS setup avoids /dev/urandom */
+    if (gnutls_rnd(GNUTLS_RND_KEY, seed, sizeof(seed)) != 0) {
+        return -1;
+    }
+    return 0;
 }
 
 struct mlvpn_quic_ctx *
