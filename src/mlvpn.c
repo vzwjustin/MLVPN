@@ -1119,6 +1119,21 @@ mlvpn_rtun_start(mlvpn_tunnel_t *t)
 
     return 0;
 error:
+#ifdef HAVE_QUIC
+    if (t->quic != NULL) {
+        if (ev_is_active(&t->quic_timer)) {
+            ev_timer_stop(EV_A_ &t->quic_timer);
+        }
+        mlvpn_quic_destroy(t->quic);
+        t->quic = NULL;
+    }
+#endif
+    if (ev_is_active(&t->io_read)) {
+        ev_io_stop(EV_A_ &t->io_read);
+    }
+    if (ev_is_active(&t->io_write)) {
+        ev_io_stop(EV_A_ &t->io_write);
+    }
     if (t->fd >= 0) {
         close(t->fd);
         t->fd = -1;

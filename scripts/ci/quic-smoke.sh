@@ -62,13 +62,35 @@ EOF
 chmod 0600 "$WORKDIR/server.conf" "$WORKDIR/client.conf"
 
 sudo "$MLVPN" -c "$WORKDIR/server.conf" -u mlvpn >"$WORKDIR/server.log" 2>&1 &
-sleep 2
+
+for _ in $(seq 1 15); do
+    if grep -q "QUIC transport enabled" "$WORKDIR/server.log"; then
+        break
+    fi
+    if grep -qiE 'fatal|TLS init failed' "$WORKDIR/server.log"; then
+        echo "Server failed to start:" >&2
+        cat "$WORKDIR/server.log" >&2
+        exit 1
+    fi
+    sleep 1
+done
+
+if ! grep -q "QUIC transport enabled" "$WORKDIR/server.log"; then
+    echo "Server did not start QUIC transport in time:" >&2
+    cat "$WORKDIR/server.log" >&2
+    exit 1
+fi
+
 sudo "$MLVPN" -c "$WORKDIR/client.conf" -u mlvpn >"$WORKDIR/client.log" 2>&1 &
 
 for _ in $(seq 1 30); do
     if grep -q "QUIC session established" "$WORKDIR/client.log"; then
         echo "QUIC handshake succeeded"
         exit 0
+    fi
+    if grep -qiE 'fatal|TLS init failed|quic_create|incorrect password' \
+        "$WORKDIR/server.log" "$WORKDIR/client.log"; then
+        break
     fi
     sleep 1
 done

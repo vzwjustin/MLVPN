@@ -279,6 +279,7 @@ quic_generate_password_cert(gnutls_x509_crt_t *cert,
         gnutls_x509_crt_deinit(*cert);
         return -1;
     }
+    gnutls_x509_privkey_fix(*key);
 
     if (gnutls_x509_crt_set_key(*cert, *key) != 0 ||
         gnutls_x509_crt_set_version(*cert, 3) != 0 ||
