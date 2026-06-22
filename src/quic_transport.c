@@ -257,9 +257,9 @@ static void
 quic_scalar_from_seed(unsigned char scalar[32], const unsigned char seed[32])
 {
     /* SECP256R1 scalars must be in (0, n). A 31-byte value is always < n. */
-    memset(scalar, 0, sizeof(scalar));
+    memset(scalar, 0, 32);
     memcpy(scalar + 1, seed, 31);
-    if (memcmp(scalar, "\0", sizeof(scalar)) == 0) {
+    if (memcmp(scalar, "\0", 32) == 0) {
         scalar[31] = 1;
     }
 }
@@ -619,6 +619,10 @@ quic_drain_outbound(struct mlvpn_quic_ctx *ctx)
     ngtcp2_pkt_info pi;
     ngtcp2_path_storage ps;
     int ret;
+
+    if (ctx->outbound_len == 0) {
+        return QUIC_OK;
+    }
 
     if (ctx->stream_id < 0 && quic_open_stream(ctx) != 0) {
         return QUIC_ERROR;
