@@ -590,7 +590,8 @@ quic_client_conn_init(struct mlvpn_quic_ctx *ctx)
 
 static int
 quic_server_conn_init(struct mlvpn_quic_ctx *ctx, const ngtcp2_path *path,
-                      uint32_t version, const ngtcp2_cid *odcid)
+                      uint32_t version, const ngtcp2_cid *client_scid,
+                      const ngtcp2_cid *client_dcid)
 {
     ngtcp2_callbacks callbacks;
     ngtcp2_cid scid;
@@ -603,11 +604,16 @@ quic_server_conn_init(struct mlvpn_quic_ctx *ctx, const ngtcp2_path *path,
     ngtcp2_settings_default(&settings);
     settings.initial_ts = quic_timestamp();
     quic_init_transport_params(&params);
+    params.original_dcid = *client_dcid;
+    params.active_connection_id_limit = 7;
+    params.stateless_reset_token_present = 1;
+    randombytes_buf(params.stateless_reset_token,
+                    sizeof(params.stateless_reset_token));
 
     scid.datalen = 8;
     randombytes_buf(scid.data, scid.datalen);
 
-    rv = ngtcp2_conn_server_new(&ctx->conn, odcid, &scid, path, version,
+    rv = ngtcp2_conn_server_new(&ctx->conn, client_scid, &scid, path, version,
                                 &callbacks, &settings, &params, NULL, ctx);
     if (rv != 0) {
         log_warnx("quic", "%s ngtcp2_conn_server_new failed: %s",
@@ -641,7 +647,7 @@ quic_server_accept(struct mlvpn_quic_ctx *ctx, const uint8_t *pkt, size_t pktlen
         return -1;
     }
 
-    if (quic_server_conn_init(ctx, path, hd.version, &hd.scid) != 0) {
+    if (quic_server_conn_init(ctx, path, hd.version, &hd.scid, &hd.dcid) != 0) {
         return -1;
     }
 
