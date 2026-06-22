@@ -395,9 +395,13 @@ mlvpn_quic_timer_cb(EV_P_ ev_timer *w, int revents)
         return;
     }
 
-    if (mlvpn_quic_handle_expiry(tun->quic) != 0) {
+    if (mlvpn_quic_handle_expiry(tun->quic) < 0) {
         mlvpn_rtun_status_down(tun);
         return;
+    }
+
+    if (mlvpn_quic_needs_flush(tun->quic) && !ev_is_active(&tun->io_write)) {
+        ev_io_start(EV_A_ &tun->io_write);
     }
 
     w->repeat = mlvpn_quic_timeout(tun->quic);
@@ -421,7 +425,7 @@ mlvpn_rtun_read(EV_P_ ev_io *w, int revents)
 
 #ifdef HAVE_QUIC
     if (mlvpn_options.use_quic && tun->quic != NULL) {
-        uint8_t buf[65536];
+        uint8_t buf[MLVPN_QUIC_UDP_PAYLOAD];
         struct iovec iov = {buf, sizeof(buf)};
         struct msghdr msg = {0};
 
@@ -443,8 +447,12 @@ mlvpn_rtun_read(EV_P_ ev_io *w, int revents)
         }
 
         if (mlvpn_quic_input(tun->quic, buf, (size_t)len,
-                             (struct sockaddr *)&clientaddr, msg.msg_namelen) != 0) {
+                             (struct sockaddr *)&clientaddr, msg.msg_namelen) < 0) {
             mlvpn_rtun_status_down(tun);
+            return;
+        }
+        if (mlvpn_quic_needs_flush(tun->quic) && !ev_is_active(&tun->io_write)) {
+            ev_io_start(EV_A_ &tun->io_write);
         }
         return;
     }
@@ -648,8 +656,16 @@ mlvpn_rtun_send(mlvpn_tunnel_t *tun, circular_buffer_t *pktbuf)
             tun->sentpackets++;
             tun->sentbytes += pkt->len;
             log_debug("quic", "> %s sent %d bytes over QUIC", tun->name, pkt->len);
+        } else if (sent < 0) {
+            log_warnx("quic", "%s send failed", tun->name);
+            mlvpn_rtun_status_down(tun);
+            return sent;
         }
-        if (ev_is_active(&tun->io_write) && mlvpn_cb_is_empty(pktbuf)) {
+        if (mlvpn_quic_needs_flush(tun->quic) && !ev_is_active(&tun->io_write)) {
+            ev_io_start(EV_A_ &tun->io_write);
+        }
+        if (ev_is_active(&tun->io_write) && mlvpn_cb_is_empty(pktbuf) &&
+            !mlvpn_quic_needs_flush(tun->quic)) {
             ev_io_stop(EV_A_ &tun->io_write);
         }
         return sent;
@@ -746,6 +762,17 @@ static void
 mlvpn_rtun_write(EV_P_ ev_io *w, int revents)
 {
     mlvpn_tunnel_t *tun = w->data;
+    (void)revents;
+
+#ifdef HAVE_QUIC
+    if (mlvpn_options.use_quic && tun->quic != NULL) {
+        if (mlvpn_quic_flush(tun->quic) < 0) {
+            mlvpn_rtun_status_down(tun);
+            return;
+        }
+    }
+#endif
+
     if (! mlvpn_cb_is_empty(tun->hpsbuf)) {
         mlvpn_rtun_send(tun, tun->hpsbuf);
     }
@@ -753,6 +780,15 @@ mlvpn_rtun_write(EV_P_ ev_io *w, int revents)
     if (! mlvpn_cb_is_empty(tun->sbuf)) {
         mlvpn_rtun_send(tun, tun->sbuf);
     }
+
+#ifdef HAVE_QUIC
+    if (mlvpn_options.use_quic && tun->quic != NULL &&
+        !mlvpn_quic_needs_flush(tun->quic) &&
+        mlvpn_cb_is_empty(tun->hpsbuf) && mlvpn_cb_is_empty(tun->sbuf) &&
+        ev_is_active(&tun->io_write)) {
+        ev_io_stop(EV_A_ &tun->io_write);
+    }
+#endif
 }
 
 mlvpn_tunnel_t *
@@ -1048,6 +1084,10 @@ mlvpn_rtun_start(mlvpn_tunnel_t *t)
         }
 
         if (!t->server_mode && t->addrinfo != NULL) {
+            if (t->addrinfo->ai_addrlen > sizeof(remote_addr)) {
+                log_warnx("quic", "%s peer address too large", t->name);
+                goto error;
+            }
             memcpy(&remote_addr, t->addrinfo->ai_addr, t->addrinfo->ai_addrlen);
             remote_len = t->addrinfo->ai_addrlen;
             remote = (struct sockaddr *)&remote_addr;

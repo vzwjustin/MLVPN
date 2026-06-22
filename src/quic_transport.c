@@ -20,12 +20,18 @@
 #define MLVPN_QUIC_ALPN "\x05mlvpn"
 #define MLVPN_QUIC_STREAM_DATA 0
 
+/* quic_send_packet / mlvpn_quic_flush return codes */
+#define QUIC_OK       0
+#define QUIC_BLOCKED  1
+#define QUIC_ERROR   -1
+
 struct mlvpn_quic_ctx {
     struct mlvpn_tunnel_s *tun;
     mlvpn_quic_data_cb data_cb;
     mlvpn_quic_connected_cb connected_cb;
     int server_mode;
     int connected;
+    int blocked;
     int fd;
     struct sockaddr_storage local_addr;
     socklen_t local_addrlen;
@@ -39,6 +45,11 @@ struct mlvpn_quic_ctx {
     uint8_t *pending;
     size_t pending_len;
     size_t pending_cap;
+    uint8_t *outbound;
+    size_t outbound_len;
+    size_t outbound_cap;
+    uint8_t udp_out[MLVPN_QUIC_UDP_PAYLOAD];
+    size_t udp_out_len;
 };
 
 static uint64_t
@@ -122,31 +133,64 @@ quic_handshake_completed_cb(ngtcp2_conn *conn, void *user_data)
 }
 
 static int
-quic_pending_append(struct mlvpn_quic_ctx *ctx, const uint8_t *data,
-                    size_t datalen)
+quic_copy_addr(struct sockaddr_storage *dest, socklen_t *destlen,
+               const struct sockaddr *src, socklen_t srclen)
+{
+    if (src == NULL || srclen == 0) {
+        return 0;
+    }
+    if (srclen > sizeof(*dest)) {
+        return -1;
+    }
+    memcpy(dest, src, srclen);
+    *destlen = srclen;
+    return 0;
+}
+
+static int
+quic_buf_append(uint8_t **buf, size_t *len, size_t *cap,
+                const uint8_t *data, size_t datalen)
 {
     size_t needed;
+    uint8_t *newbuf;
 
     if (datalen == 0) {
         return 0;
     }
 
-    needed = ctx->pending_len + datalen;
-    if (needed > ctx->pending_cap) {
-        size_t cap = ctx->pending_cap ? ctx->pending_cap : 4096;
+    needed = *len + datalen;
+    if (needed > *cap) {
+        size_t newcap = *cap ? *cap : 4096;
 
-        while (cap < needed) {
-            cap *= 2;
+        while (newcap < needed) {
+            newcap *= 2;
         }
-        ctx->pending = realloc(ctx->pending, cap);
-        if (ctx->pending == NULL) {
+        newbuf = realloc(*buf, newcap);
+        if (newbuf == NULL) {
             return -1;
         }
-        ctx->pending_cap = cap;
+        *buf = newbuf;
+        *cap = newcap;
     }
-    memcpy(ctx->pending + ctx->pending_len, data, datalen);
-    ctx->pending_len += datalen;
+    memcpy(*buf + *len, data, datalen);
+    *len += datalen;
     return 0;
+}
+
+static int
+quic_pending_append(struct mlvpn_quic_ctx *ctx, const uint8_t *data,
+                    size_t datalen)
+{
+    return quic_buf_append(&ctx->pending, &ctx->pending_len, &ctx->pending_cap,
+                           data, datalen);
+}
+
+static int
+quic_outbound_append(struct mlvpn_quic_ctx *ctx, const uint8_t *data,
+                     size_t datalen)
+{
+    return quic_buf_append(&ctx->outbound, &ctx->outbound_len,
+                           &ctx->outbound_cap, data, datalen);
 }
 
 static void
@@ -362,11 +406,15 @@ quic_conn_init(struct mlvpn_quic_ctx *ctx)
 }
 
 static int
-quic_send_packet(struct mlvpn_quic_ctx *ctx, const uint8_t *data, size_t datalen)
+quic_send_udp(struct mlvpn_quic_ctx *ctx, const uint8_t *data, size_t datalen)
 {
     struct iovec iov = {(uint8_t *)data, datalen};
     struct msghdr msg = {0};
     ssize_t nwrite;
+
+    if (datalen > MLVPN_QUIC_UDP_PAYLOAD) {
+        return QUIC_ERROR;
+    }
 
     msg.msg_iov = &iov;
     msg.msg_iovlen = 1;
@@ -380,12 +428,110 @@ quic_send_packet(struct mlvpn_quic_ctx *ctx, const uint8_t *data, size_t datalen
     } while (nwrite == -1 && errno == EINTR);
 
     if (nwrite == -1) {
-        if (errno != EAGAIN && errno != EWOULDBLOCK) {
-            log_warn("quic", "%s sendmsg failed", ctx->tun->name);
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            memcpy(ctx->udp_out, data, datalen);
+            ctx->udp_out_len = datalen;
+            ctx->blocked = 1;
+            return QUIC_BLOCKED;
         }
-        return -1;
+        log_warn("quic", "%s sendmsg failed", ctx->tun->name);
+        return QUIC_ERROR;
     }
-    return 0;
+    return QUIC_OK;
+}
+
+static int
+quic_send_udp_pending(struct mlvpn_quic_ctx *ctx)
+{
+    int ret;
+
+    if (ctx->udp_out_len == 0) {
+        ctx->blocked = 0;
+        return QUIC_OK;
+    }
+
+    ret = quic_send_udp(ctx, ctx->udp_out, ctx->udp_out_len);
+    if (ret == QUIC_OK) {
+        ctx->udp_out_len = 0;
+        ctx->blocked = 0;
+    }
+    return ret;
+}
+
+static int
+quic_drain_outbound(struct mlvpn_quic_ctx *ctx)
+{
+    uint8_t buf[MLVPN_QUIC_UDP_PAYLOAD];
+    ngtcp2_vec datav;
+    ngtcp2_ssize nwrite, wdatalen;
+    ngtcp2_pkt_info pi;
+    ngtcp2_path_storage ps;
+    int ret;
+
+    if (ctx->stream_id < 0 && quic_open_stream(ctx) != 0) {
+        return QUIC_ERROR;
+    }
+
+    while (ctx->outbound_len > 0) {
+        ngtcp2_path_storage_zero(&ps);
+        datav.base = ctx->outbound;
+        datav.len = ctx->outbound_len;
+
+        nwrite = ngtcp2_conn_writev_stream(ctx->conn, &ps.path, &pi, buf,
+                                           sizeof(buf), &wdatalen,
+                                           NGTCP2_WRITE_STREAM_FLAG_NONE,
+                                           ctx->stream_id, &datav, 1,
+                                           quic_timestamp());
+        if (nwrite < 0 && nwrite != NGTCP2_ERR_WRITE_MORE) {
+            log_warnx("quic", "%s writev_stream: %s",
+                      ctx->tun->name, ngtcp2_strerror((int)nwrite));
+            return QUIC_ERROR;
+        }
+        if (wdatalen > 0) {
+            memmove(ctx->outbound, ctx->outbound + wdatalen,
+                    ctx->outbound_len - wdatalen);
+            ctx->outbound_len -= wdatalen;
+        }
+        if (nwrite > 0) {
+            ret = quic_send_udp(ctx, buf, (size_t)nwrite);
+            if (ret != QUIC_OK) {
+                return ret;
+            }
+        }
+        if (nwrite == 0 && wdatalen == 0) {
+            break;
+        }
+    }
+    return QUIC_OK;
+}
+
+static int
+quic_write_packets(struct mlvpn_quic_ctx *ctx)
+{
+    uint8_t buf[MLVPN_QUIC_UDP_PAYLOAD];
+    ngtcp2_ssize nwrite;
+    ngtcp2_pkt_info pi;
+    ngtcp2_path_storage ps;
+    int ret;
+
+    ngtcp2_path_storage_zero(&ps);
+    for (;;) {
+        nwrite = ngtcp2_conn_write_pkt(ctx->conn, &ps.path, &pi, buf,
+                                       sizeof(buf), quic_timestamp());
+        if (nwrite == 0) {
+            break;
+        }
+        if (nwrite < 0) {
+            log_warnx("quic", "%s write_pkt: %s",
+                      ctx->tun->name, ngtcp2_strerror((int)nwrite));
+            return QUIC_ERROR;
+        }
+        ret = quic_send_udp(ctx, buf, (size_t)nwrite);
+        if (ret != QUIC_OK) {
+            return ret;
+        }
+    }
+    return QUIC_OK;
 }
 
 struct mlvpn_quic_ctx *
@@ -409,11 +555,15 @@ mlvpn_quic_create(struct mlvpn_tunnel_s *tun, int server_mode, int fd,
     ctx->connected_cb = connected_cb;
     ctx->stream_id = -1;
 
-    memcpy(&ctx->local_addr, local_addr, local_addrlen);
-    ctx->local_addrlen = local_addrlen;
-    if (remote_addr != NULL && remote_addrlen > 0) {
-        memcpy(&ctx->remote_addr, remote_addr, remote_addrlen);
-        ctx->remote_addrlen = remote_addrlen;
+    if (quic_copy_addr(&ctx->local_addr, &ctx->local_addrlen,
+                       local_addr, local_addrlen) != 0) {
+        log_warnx("quic", "%s invalid local address length", tun->name);
+        goto fail;
+    }
+    if (quic_copy_addr(&ctx->remote_addr, &ctx->remote_addrlen,
+                       remote_addr, remote_addrlen) != 0) {
+        log_warnx("quic", "%s invalid remote address length", tun->name);
+        goto fail;
     }
 
     if (quic_gnutls_init(ctx) != 0) {
@@ -425,7 +575,7 @@ mlvpn_quic_create(struct mlvpn_tunnel_s *tun, int server_mode, int fd,
         goto fail;
     }
 
-    if (mlvpn_quic_flush(ctx) != 0) {
+    if (mlvpn_quic_flush(ctx) < 0) {
         goto fail;
     }
 
@@ -452,6 +602,7 @@ mlvpn_quic_destroy(struct mlvpn_quic_ctx *ctx)
         gnutls_certificate_free_credentials(ctx->cred);
     }
     free(ctx->pending);
+    free(ctx->outbound);
     free(ctx);
 }
 
@@ -468,8 +619,11 @@ mlvpn_quic_input(struct mlvpn_quic_ctx *ctx, const uint8_t *pkt, size_t pktlen,
     }
 
     if (remote_addr != NULL && remote_addrlen > 0) {
-        memcpy(&ctx->remote_addr, remote_addr, remote_addrlen);
-        ctx->remote_addrlen = remote_addrlen;
+        if (quic_copy_addr(&ctx->remote_addr, &ctx->remote_addrlen,
+                           remote_addr, remote_addrlen) != 0) {
+            log_warnx("quic", "%s invalid peer address length", ctx->tun->name);
+            return QUIC_ERROR;
+        }
     }
 
     path.local.addr = (struct sockaddr *)&ctx->local_addr;
@@ -482,7 +636,7 @@ mlvpn_quic_input(struct mlvpn_quic_ctx *ctx, const uint8_t *pkt, size_t pktlen,
                               quic_timestamp());
     if (rv != 0) {
         log_warnx("quic", "%s read_pkt: %s", ctx->tun->name, ngtcp2_strerror(rv));
-        return -1;
+        return QUIC_ERROR;
     }
 
     return mlvpn_quic_flush(ctx);
@@ -492,75 +646,66 @@ int
 mlvpn_quic_send(struct mlvpn_quic_ctx *ctx, const uint8_t *data, size_t len)
 {
     uint8_t frame[DEFAULT_MTU + 2];
-    ngtcp2_vec datav;
-    ngtcp2_ssize nwrite, wdatalen;
-    ngtcp2_pkt_info pi;
-    ngtcp2_path_storage ps;
-    uint8_t buf[1280];
-    uint32_t flags;
+    int ret;
 
     if (ctx == NULL || ctx->conn == NULL || !ctx->connected) {
-        return -1;
+        return QUIC_ERROR;
     }
-    if (ctx->stream_id < 0 && quic_open_stream(ctx) != 0) {
-        return -1;
-    }
-    if (len + 2 > sizeof(frame)) {
-        return -1;
+    if (len > DEFAULT_MTU) {
+        return QUIC_ERROR;
     }
 
     frame[0] = (uint8_t)(len >> 8);
     frame[1] = (uint8_t)(len & 0xff);
     memcpy(frame + 2, data, len);
 
-    datav.base = frame;
-    datav.len = len + 2;
-    ngtcp2_path_storage_zero(&ps);
-    flags = NGTCP2_WRITE_STREAM_FLAG_NONE;
+    if (quic_outbound_append(ctx, frame, len + 2) != 0) {
+        return QUIC_ERROR;
+    }
 
-    nwrite = ngtcp2_conn_writev_stream(ctx->conn, &ps.path, &pi, buf, sizeof(buf),
-                                       &wdatalen, flags, ctx->stream_id, &datav, 1,
-                                       quic_timestamp());
-    if (nwrite < 0) {
-        log_warnx("quic", "%s writev_stream: %s",
-                  ctx->tun->name, ngtcp2_strerror((int)nwrite));
-        return -1;
+    ret = mlvpn_quic_flush(ctx);
+    if (ret == QUIC_ERROR) {
+        return QUIC_ERROR;
     }
-    if (nwrite > 0 && quic_send_packet(ctx, buf, (size_t)nwrite) != 0) {
-        return -1;
-    }
-    return (int)wdatalen;
+    return (int)len;
 }
 
 int
 mlvpn_quic_flush(struct mlvpn_quic_ctx *ctx)
 {
-    ngtcp2_ssize nwrite;
-    ngtcp2_pkt_info pi;
-    ngtcp2_path_storage ps;
-    uint8_t buf[1280];
+    int ret;
 
     if (ctx == NULL || ctx->conn == NULL) {
-        return -1;
+        return QUIC_ERROR;
     }
 
-    ngtcp2_path_storage_zero(&ps);
-    for (;;) {
-        nwrite = ngtcp2_conn_write_pkt(ctx->conn, &ps.path, &pi, buf, sizeof(buf),
-                                       quic_timestamp());
-        if (nwrite == 0) {
-            break;
-        }
-        if (nwrite < 0) {
-            log_warnx("quic", "%s write_pkt: %s",
-                      ctx->tun->name, ngtcp2_strerror((int)nwrite));
-            return -1;
-        }
-        if (quic_send_packet(ctx, buf, (size_t)nwrite) != 0) {
-            return -1;
-        }
+    ret = quic_send_udp_pending(ctx);
+    if (ret != QUIC_OK) {
+        return ret;
     }
-    return 0;
+
+    ret = quic_drain_outbound(ctx);
+    if (ret != QUIC_OK) {
+        return ret;
+    }
+
+    ret = quic_write_packets(ctx);
+    if (ret != QUIC_OK) {
+        return ret;
+    }
+
+    /* Stream data may have generated more QUIC packets */
+    ret = quic_write_packets(ctx);
+    if (ret != QUIC_OK) {
+        return ret;
+    }
+
+    if (ctx->outbound_len > 0 || ctx->udp_out_len > 0) {
+        ctx->blocked = 1;
+        return QUIC_BLOCKED;
+    }
+    ctx->blocked = 0;
+    return QUIC_OK;
 }
 
 int
@@ -569,11 +714,11 @@ mlvpn_quic_handle_expiry(struct mlvpn_quic_ctx *ctx)
     int rv;
 
     if (ctx == NULL || ctx->conn == NULL) {
-        return -1;
+        return QUIC_ERROR;
     }
     rv = ngtcp2_conn_handle_expiry(ctx->conn, quic_timestamp());
     if (rv != 0) {
-        return -1;
+        return QUIC_ERROR;
     }
     return mlvpn_quic_flush(ctx);
 }
@@ -598,4 +743,11 @@ int
 mlvpn_quic_is_connected(struct mlvpn_quic_ctx *ctx)
 {
     return ctx != NULL && ctx->connected;
+}
+
+int
+mlvpn_quic_needs_flush(struct mlvpn_quic_ctx *ctx)
+{
+    return ctx != NULL &&
+        (ctx->blocked || ctx->udp_out_len > 0 || ctx->outbound_len > 0);
 }

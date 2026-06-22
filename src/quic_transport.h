@@ -5,6 +5,8 @@
 #include <sys/socket.h>
 #include <ev.h>
 
+#define MLVPN_QUIC_UDP_PAYLOAD 2048
+
 struct mlvpn_tunnel_s;
 
 typedef void (*mlvpn_quic_data_cb)(struct mlvpn_tunnel_s *tun,
@@ -36,5 +38,7 @@ int mlvpn_quic_handle_expiry(struct mlvpn_quic_ctx *ctx);
 ev_tstamp mlvpn_quic_timeout(struct mlvpn_quic_ctx *ctx);
 
 int mlvpn_quic_is_connected(struct mlvpn_quic_ctx *ctx);
+
+int mlvpn_quic_needs_flush(struct mlvpn_quic_ctx *ctx);
 
 #endif
