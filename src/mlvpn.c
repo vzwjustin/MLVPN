@@ -1084,6 +1084,7 @@ mlvpn_rtun_start(mlvpn_tunnel_t *t)
             log_warn("quic", "%s getsockname failed", t->name);
             goto error;
         }
+        log_warnx("quic", "%s local address ready", t->name);
 
         if (!t->server_mode && t->addrinfo != NULL) {
             if (t->addrinfo->ai_addrlen > sizeof(remote_addr)) {

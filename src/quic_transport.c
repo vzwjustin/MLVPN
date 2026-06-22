@@ -369,6 +369,7 @@ quic_gnutls_init(struct mlvpn_quic_ctx *ctx)
         gnutls_ready = 1;
     }
 
+    log_warnx("quic", "%s TLS credentials begin", ctx->tun->name);
     rv = gnutls_certificate_allocate_credentials(&ctx->cred);
     if (rv != 0) {
         return -1;
@@ -378,9 +379,11 @@ quic_gnutls_init(struct mlvpn_quic_ctx *ctx)
         gnutls_x509_privkey_t key;
         gnutls_x509_crt_t cert;
 
+        log_warnx("quic", "%s generating password certificate", ctx->tun->name);
         if (quic_generate_password_cert(&cert, &key) != 0) {
             return -1;
         }
+        log_warnx("quic", "%s password certificate ready", ctx->tun->name);
         gnutls_certificate_set_x509_key(ctx->cred, &cert, 1, key);
         gnutls_x509_crt_deinit(cert);
         gnutls_x509_privkey_deinit(key);
@@ -654,6 +657,7 @@ mlvpn_quic_create(struct mlvpn_tunnel_s *tun, int server_mode, int fd,
     if (ctx == NULL) {
         return NULL;
     }
+    log_warnx("quic", "%s allocating QUIC context", tun->name);
 
     ctx->tun = tun;
     ctx->server_mode = server_mode;
