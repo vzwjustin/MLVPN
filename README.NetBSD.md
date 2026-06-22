@@ -23,6 +23,16 @@ CPPFLAGS="-I/usr/pkg/include/ev" LDFLAGS="-L/usr/pkg/lib/ev" ./configure
 make
 ```
 
+## QUIC transport (optional)
+
+If libngtcp2 and GnuTLS are installed, QUIC can be enabled at build time:
+
+```shell
+./configure --enable-quic
+```
+
+Set `transport = "quic"` in `mlvpn.conf` on both client and server. See `README.md`.
+
 Install
 =======
 

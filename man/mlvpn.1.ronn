@@ -13,7 +13,8 @@ Main features are:
 
   * Bandwidth aggregation
   * High availability (detects link up/down)
-  * Security (Privilege separation, auth and cipher using libsodium)
+  * Security (Privilege separation, auth and cipher using libsodium;
+    optional QUIC transport with TLS 1.3)
   * Scritable
   * External program control (using unix socket or TCP/HTTP socket)
 

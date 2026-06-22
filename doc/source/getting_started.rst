@@ -57,6 +57,22 @@ Install from source
 Please refer to the `README.md <https://github.com/zehome/MLVPN/>`_ file inside
 the mlvpn repository for source build instructions.
 
+QUIC transport (optional)
+-------------------------
+To use ``transport = "quic"`` in ``mlvpn.conf``, build with QUIC support and
+install the extra dependencies (Debian/Ubuntu example):
+
+.. code-block:: sh
+
+    sudo apt-get install libngtcp2-dev libngtcp2-crypto-gnutls-dev libgnutls28-dev
+    ./autogen.sh
+    ./configure --enable-quic
+    make
+    sudo make install
+
+Both client and server must be built with QUIC enabled and must set the same
+``transport`` and ``password`` values. The password derives the TLS certificate
+fingerprint verified during the QUIC handshake.
 
 Configuration
 =============
@@ -65,8 +81,9 @@ mlvpn is using two configuration files for every tunnel you want to make.
 mlvpn.conf
 ----------
 `mlvpn.conf(5) <https://github.com/zehome/MLVPN/blob/master/man/mlvpn.conf.5.ronn>`_ is an ini-style configuration.
-It's used to set the interface name, the secret-key, network configuration
-of the multiple links and path to the second configration script.
+It's used to set the interface name, the secret-key, the link transport
+(``udp`` or ``quic``), network configuration of the multiple links and path to
+the second configuration script.
 
 Please refer the the mlvpn.conf(5) manpage for further informations.
 

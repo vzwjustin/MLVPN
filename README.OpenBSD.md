@@ -31,6 +31,18 @@ make
 doas make install
 ```
 
+## QUIC transport (optional)
+
+QUIC support is optional and not included in the default OpenBSD package build.
+If ngtcp2 and GnuTLS are available, configure with:
+
+```sh
+./configure --enable-quic
+```
+
+Both tunnel endpoints must use `transport = "quic"` in `mlvpn.conf` and the same
+`password`. See the main `README.md` for details.
+
 ## Manual installation
 
 ```sh
