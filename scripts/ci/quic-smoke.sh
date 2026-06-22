@@ -61,13 +61,15 @@ EOF
 
 chmod 0600 "$WORKDIR/server.conf" "$WORKDIR/client.conf"
 
-sudo stdbuf -oL "$MLVPN" -c "$WORKDIR/server.conf" -u mlvpn >"$WORKDIR/server.log" 2>&1 &
+FAIL_PAT='\[CRIT|fatal|unable to chroot|TLS init failed|incorrect password|quic_create|unable to open /dev/net/tun|failed to open'
+
+sudo stdbuf -oL "$MLVPN" --debug -c "$WORKDIR/server.conf" -u mlvpn >"$WORKDIR/server.log" 2>&1 &
 
 for _ in $(seq 1 30); do
-    if grep -q "QUIC transport enabled" "$WORKDIR/server.log"; then
+    if grep -qE 'QUIC transport enabled|created interface' "$WORKDIR/server.log"; then
         break
     fi
-    if grep -qiE 'fatal|TLS init failed' "$WORKDIR/server.log"; then
+    if grep -qiE "$FAIL_PAT" "$WORKDIR/server.log"; then
         echo "Server failed to start:" >&2
         cat "$WORKDIR/server.log" >&2
         exit 1
@@ -75,21 +77,20 @@ for _ in $(seq 1 30); do
     sleep 1
 done
 
-if ! grep -q "QUIC transport enabled" "$WORKDIR/server.log"; then
+if ! grep -qE 'QUIC transport enabled|created interface' "$WORKDIR/server.log"; then
     echo "Server did not start QUIC transport in time:" >&2
     cat "$WORKDIR/server.log" >&2
     exit 1
 fi
 
-sudo stdbuf -oL "$MLVPN" -c "$WORKDIR/client.conf" -u mlvpn >"$WORKDIR/client.log" 2>&1 &
+sudo stdbuf -oL "$MLVPN" --debug -c "$WORKDIR/client.conf" -u mlvpn >"$WORKDIR/client.log" 2>&1 &
 
 for _ in $(seq 1 30); do
     if grep -q "QUIC session established" "$WORKDIR/client.log"; then
         echo "QUIC handshake succeeded"
         exit 0
     fi
-    if grep -qiE 'fatal|TLS init failed|quic_create|incorrect password' \
-        "$WORKDIR/server.log" "$WORKDIR/client.log"; then
+    if grep -qiE "$FAIL_PAT" "$WORKDIR/server.log" "$WORKDIR/client.log"; then
         break
     fi
     sleep 1
