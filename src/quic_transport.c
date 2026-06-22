@@ -393,6 +393,10 @@ quic_load_ci_credentials(gnutls_certificate_credentials_t cred)
     }
     snprintf(certpath, sizeof(certpath), "%s/server.crt", dir);
     snprintf(keypath, sizeof(keypath), "%s/server.key", dir);
+    if (access(certpath, R_OK) != 0 || access(keypath, R_OK) != 0) {
+        log_warn("quic", "CI TLS fixture unreadable under %s", dir);
+        return -1;
+    }
     rv = gnutls_certificate_set_x509_key_file(cred, certpath, keypath,
                                               GNUTLS_X509_FMT_PEM);
     if (rv != 0) {
