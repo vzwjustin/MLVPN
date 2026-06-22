@@ -133,15 +133,43 @@ static int
 quic_copy_addr(struct sockaddr_storage *dest, socklen_t *destlen,
                const struct sockaddr *src, socklen_t srclen)
 {
+    socklen_t normalized;
+
     if (src == NULL || srclen == 0) {
+        *destlen = 0;
         return 0;
     }
     if (srclen > sizeof(*dest)) {
         return -1;
     }
     memcpy(dest, src, srclen);
-    *destlen = srclen;
+    normalized = srclen;
+    if (src->sa_family == AF_INET) {
+        normalized = sizeof(struct sockaddr_in);
+    } else if (src->sa_family == AF_INET6) {
+        normalized = sizeof(struct sockaddr_in6);
+    }
+    *destlen = normalized;
     return 0;
+}
+
+static void
+quic_fill_path(ngtcp2_path *path, struct mlvpn_quic_ctx *ctx)
+{
+    memset(path, 0, sizeof(*path));
+    path->local.addr = (struct sockaddr *)&ctx->local_addr;
+    path->local.addrlen = ctx->local_addrlen;
+    if (ctx->remote_addrlen > 0) {
+        path->remote.addr = (struct sockaddr *)&ctx->remote_addr;
+        path->remote.addrlen = ctx->remote_addrlen;
+    }
+    path->user_data = NULL;
+}
+
+static int
+quic_has_peer(const struct mlvpn_quic_ctx *ctx)
+{
+    return ctx->remote_addrlen > 0;
 }
 
 static int
@@ -507,11 +535,7 @@ quic_conn_init(struct mlvpn_quic_ctx *ctx)
     ngtcp2_transport_params params;
     int rv;
 
-    path.local.addr = (struct sockaddr *)&ctx->local_addr;
-    path.local.addrlen = ctx->local_addrlen;
-    path.remote.addr = (struct sockaddr *)&ctx->remote_addr;
-    path.remote.addrlen = ctx->remote_addrlen;
-    path.user_data = NULL;
+    quic_fill_path(&path, ctx);
 
     ngtcp2_settings_default(&settings);
     settings.initial_ts = quic_timestamp();
@@ -630,6 +654,7 @@ quic_drain_outbound(struct mlvpn_quic_ctx *ctx)
 
     while (ctx->outbound_len > 0) {
         ngtcp2_path_storage_zero(&ps);
+        quic_fill_path(&ps.path, ctx);
         datav.base = ctx->outbound;
         datav.len = ctx->outbound_len;
 
@@ -670,7 +695,12 @@ quic_write_packets(struct mlvpn_quic_ctx *ctx)
     ngtcp2_path_storage ps;
     int ret;
 
+    if (ctx->server_mode && !quic_has_peer(ctx)) {
+        return QUIC_OK;
+    }
+
     ngtcp2_path_storage_zero(&ps);
+    quic_fill_path(&ps.path, ctx);
     for (;;) {
         nwrite = ngtcp2_conn_write_pkt(ctx->conn, &ps.path, &pi, buf,
                                        sizeof(buf), quic_timestamp());
@@ -799,11 +829,7 @@ mlvpn_quic_input(struct mlvpn_quic_ctx *ctx, const uint8_t *pkt, size_t pktlen,
         }
     }
 
-    path.local.addr = (struct sockaddr *)&ctx->local_addr;
-    path.local.addrlen = ctx->local_addrlen;
-    path.remote.addr = (struct sockaddr *)&ctx->remote_addr;
-    path.remote.addrlen = ctx->remote_addrlen;
-    path.user_data = NULL;
+    quic_fill_path(&path, ctx);
 
     rv = ngtcp2_conn_read_pkt(ctx->conn, &path, &pi, pkt, pktlen,
                               quic_timestamp());
@@ -888,6 +914,9 @@ mlvpn_quic_handle_expiry(struct mlvpn_quic_ctx *ctx)
 
     if (ctx == NULL || ctx->conn == NULL) {
         return QUIC_ERROR;
+    }
+    if (ctx->server_mode && !quic_has_peer(ctx)) {
+        return QUIC_OK;
     }
     rv = ngtcp2_conn_handle_expiry(ctx->conn, quic_timestamp());
     if (rv != 0) {

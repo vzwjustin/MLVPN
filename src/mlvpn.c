@@ -436,10 +436,12 @@ mlvpn_rtun_read(EV_P_ ev_io *w, int revents)
 
         len = recvmsg(tun->fd, &msg, MSG_DONTWAIT);
         if (len < 0) {
-            if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                log_warn("quic", "%s read error", tun->name);
-                mlvpn_rtun_status_down(tun);
+            if (errno == EAGAIN || errno == EWOULDBLOCK ||
+                errno == ECONNREFUSED) {
+                return;
             }
+            log_warn("quic", "%s read error", tun->name);
+            mlvpn_rtun_status_down(tun);
             return;
         }
         if (len == 0) {
