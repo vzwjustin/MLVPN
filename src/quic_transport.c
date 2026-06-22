@@ -268,33 +268,30 @@ static int
 quic_import_secp256r1_privkey(gnutls_x509_privkey_t key,
                               const unsigned char scalar[32])
 {
-    unsigned char der[51];
+    unsigned char der[79];
     gnutls_datum_t data;
+    int rv;
+    static const unsigned char template_head[] = {
+        0x30, 0x4b, 0x02, 0x01, 0x00, 0x30, 0x13,
+        0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01,
+        0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07,
+        0x04, 0x33, 0x30, 0x31, 0x02, 0x01, 0x01, 0x04, 0x20
+    };
+    static const unsigned char template_tail[] = {
+        0xa0, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07
+    };
 
-    der[0] = 0x30;
-    der[1] = 0x31;
-    der[2] = 0x02;
-    der[3] = 0x01;
-    der[4] = 0x01;
-    der[5] = 0x04;
-    der[6] = 0x20;
-    memcpy(der + 7, scalar, 32);
-    der[39] = 0xa0;
-    der[40] = 0x0a;
-    der[41] = 0x06;
-    der[42] = 0x08;
-    der[43] = 0x2a;
-    der[44] = 0x86;
-    der[45] = 0x48;
-    der[46] = 0xce;
-    der[47] = 0x3d;
-    der[48] = 0x03;
-    der[49] = 0x01;
-    der[50] = 0x07;
+    memcpy(der, template_head, sizeof(template_head));
+    memcpy(der + sizeof(template_head), scalar, 32);
+    memcpy(der + sizeof(template_head) + 32, template_tail, sizeof(template_tail));
 
     data.data = der;
-    data.size = sizeof(der);
-    return gnutls_x509_privkey_import(key, &data, GNUTLS_X509_FMT_DER);
+    data.size = sizeof(template_head) + 32 + sizeof(template_tail);
+    rv = gnutls_x509_privkey_import(key, &data, GNUTLS_X509_FMT_DER);
+    if (rv != 0) {
+        log_warnx("quic", "DER private key import failed: %s", gnutls_strerror(rv));
+    }
+    return rv;
 }
 
 static int
